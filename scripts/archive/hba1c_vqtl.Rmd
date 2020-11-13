@@ -1,0 +1,163 @@
+---
+output: 
+  pdf_document
+title: "vQTL analysis to uncover putative GxE impacting HbA1c"
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, 
+                      fig.path="../output/figures/hba1c_vqtl/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer"), 
+  library, character.only=T))
+```
+
+```{r load-sumstats}
+ss_raw <- read_tsv("../data/processed/hba1c_vqtl/hba1c_all_chr.vqtl")
+ss_ME_raw <- read_tsv("../data/processed/hba1c_ME/hba1c_all_chr.gwas")
+```
+
+```{r clean-sumstats}
+ss <- ss_raw %>%
+  filter(freq > 0.005,
+         Chr != 23) %>%
+  select(SNP, chr=Chr, pos=bp, A1, A2, p=P)
+
+ss_ME <- ss_ME_raw %>%
+  select(SNP=ID, chr=`#CHROM`, pos=POS, A1, p=P) %>%
+  filter(SNP %in% ss$SNP)
+```
+
+```{r prep-funcs}
+lam.new <- function(x, p=.5){
+  # Calculate genomic inflation
+  x = x[!is.na(x)]
+  x.quantile <- quantile(x,p)
+  round((qchisq(1-x.quantile,1)/qchisq(p,1)),2)
+}
+
+make_qq <- function(pvals, main="QQ plot"){
+  # Make a Quantile-Quantile plot
+    
+  # Process p-values
+  nlpvals <- sort(-log10(pvals[pvals > 0]))
+  exp_nlp <- qexp(ppoints(length(nlpvals))) / log(10)
+
+  thin_idx <- c(sample(which(nlpvals < 2), size=min(length(nlpvals), 100000)), 
+                which(nlpvals >= 2))
+  x_vals <- exp_nlp[thin_idx]
+  y_vals <- nlpvals[thin_idx]
+  
+  # Generate the plot
+  par(ps=18)
+  plot(x=x_vals, y=y_vals, xlab="Expected", ylab="Observed", 
+       main=main, col="#000000", cex=.8, bg="#000000", pch=21, ylim=c(0, ceiling(max(nlpvals))))
+  abline(0, 1, lty=2)
+}
+
+make_manhattan <- function(data, p_col="p", ymax=NULL, main="", lower_thresh=0.01,
+                           suggestiveline=-log10(1e-05), genomewideline=-log10(5e-08)){
+    # Make a Manhattan plot
+    
+    data <- data[data[[p_col]] != 0, ]
+    
+    if (is.null(ymax)){  # Set upper limit for y-axis
+        ylim <- c(-log10(lower_thresh), ceiling(-log10(min(data[[p_col]]))))
+    } else {
+        ylim <- c(-log10(lower_thresh), ymax)
+    }
+    
+    data <- data[data[[p_col]] < lower_thresh, ]  # Filter p-values for computational efficiency
+    
+    options(repr.plot.width = 12, repr.plot.height = 6); par(ps = 18, mar = c(5,5,5,5))
+    suppressWarnings(qqman::manhattan(  # Create Manhattan plot
+        data, chr="chr", bp ="pos", p=p_col,  
+        suggestiveline=suggestiveline, genomewideline=genomewideline, 
+        ylim=ylim, main=main))
+}
+
+make_joint_plot <- function(data, p_main="p_main", p_joint="p_2df", 
+                            boundary_main=1e-5, boundary_joint=5e-8,
+                            min_p_main=1e-16, lower_thresh=0.01, main=""){
+    
+    data <- data %>%
+        filter(.data[[p_main]] != 0,
+               .data[[p_joint]] != 0,
+               .data[[p_main]] > min_p_main,  # Easier visualization of the "borderline" variants we care about here
+               .data[[p_joint]] < lower_thresh) %>%  # Filter p-values for computational efficiency
+        mutate(nlp_main=-log10(.data[[p_main]]),
+               nlp_joint=-log10(.data[[p_joint]]),
+               highlight=(nlp_main < -log10(boundary_main) & 
+                            nlp_joint > -log10(boundary_joint)))
+    
+    ggplot(data, aes(x=nlp_main, y=nlp_joint, color=highlight)) +
+        geom_point() +
+        geom_vline(xintercept=-log10(boundary_main), linetype="dotted") +
+        geom_hline(yintercept=-log10(boundary_joint), linetype="dotted") +
+        scale_color_manual(values=c("gray", "chocolate")) +
+        labs(x="-log(P) for marginal effect",
+             y="-log(P) for joint interaction effect",
+             title=main)
+}
+```
+
+# Visualize
+
+```{r viz}
+make_qq(ss$p, main="HbA1c vQTL analysis")
+legend('topleft', c(paste0('lambda_GC = ', lam.new(ss$p))), 
+       col=c("#000000"), pch=c(21), bty='n')
+make_manhattan(ss, p_col="p", lower_thresh=0.001)
+```
+
+```{r miami}
+ss_cmplot <- ss %>%
+  filter(p < 1e-2) %>%
+  select(-A1, -A2)
+ss_ME_cmplot <- ss_ME %>%
+  filter(p < 1e-2) %>%
+  select(-A1)
+cmplot_df <- inner_join(ss_cmplot, ss_ME_cmplot, 
+                        by=c("SNP", "chr", "pos"),
+                        suffix=c(".vQTL", ".ME")) %>%
+  select(SNP, chr, pos, p.ME, p.vQTL)
+CMplot::CMplot(
+  cmplot_df,
+  type="h",
+  ylim=c(0, 15),
+  plot.type="m",
+  threshold=c(5e-8, 1e-5),
+  signal.cex=0.5,
+  signal.line=0.01,
+  multracks=T,
+  cex=0.2,
+  file.output=F
+)
+
+for (plt_chr in c(8, 9, 10, 19)) {
+  cmplot_df_chr <- cmplot_df %>%
+    filter(chr == plt_chr)
+  CMplot::CMplot(
+    cmplot_df_chr,
+    type="h",
+    ylim=c(0, 15),
+    plot.type="m",
+    threshold=c(5e-8, 1e-5),
+    signal.cex=0.5,
+    signal.line=0.1,
+    multracks=T,
+    cex=0.2,
+    file.output=F
+  )
+}
+```
+
+
+```{r export}
+ss %>%
+  write_tsv("../data/processed/hba1c_vqtl/hba1c_vqtl_sumstats_noX.txt")
+
+ss_ME %>%
+  write_tsv("../data/processed/hba1c_ME/hba1c_ME_sumstats_noX.txt")
+```

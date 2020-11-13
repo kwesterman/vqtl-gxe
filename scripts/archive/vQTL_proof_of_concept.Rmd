@@ -1,0 +1,254 @@
+---
+output: html_document
+title: "vQTL exposome-wide interaction study: Motivation and preliminary data"
+---
+
+### Background
+
+Gene-environment interactions (GEIs) have been difficult to detect in a reliable manner due to small effect sizes and limitations in the measurement of exposures. Because GEIs may result in differences in variance across genotypes, tests for variance quantitative trait loci (vQTLs) represent an alternate avenue towards identifying loci harboring GEIs. Though direct GEI tests are more powerful when the environmental factor is measured accurately in all samples, vQTL tests may be advantageous when the relevant exposure is unknown, unmeasured, or poorly-measured, or when multiple exposures contribute GEI effects at a locus. A recent study explored this approach across 13 traits in the UK Biobank, demonstrating the feasibility of vQTL discovery on a genome-wide scale and showing that vQTLs are enriched for directly-tested GEI effects (Wang et al. 2019). However, this study did not use a comprehensive set of environmental exposures, and the vQTL approach has not yet been used to investigate cardiometabolic traits.
+
+Glycemic traits are strongly influenced by both genetic and environmental factors and have direct implications for cardiometabolic disease risk. HbA1c is a particularly appealing trait to assess, as it represents a more stable estimate of cumulative glucose concentrations in the blood and is one direct measure of progression from normoglycemia to diabetes. Our objective is to gain a global perspective on the architecture of GEIs affecting HbA1c across a comprehensive set of environmental exposures. Genetic loci will first be prioritized through a genome-wide vQTL analysis for HbA1c, and these loci will then be taken forward into an exposome-wide interaction study seeking GEIs influencing HbA1c.
+
+Note: The existence of a vQTL suggests the presence of GEI, although alternative explanations for observed vQTLs are possible (ex. natural selection, epistasis, and "phantom vQTLs" due to untagged variation at the causal variant), and GEIs can exist without inducing an associated vQTL.
+
+Remaining question: Should the ultimate endpoint be simply a list of exposome-wide significant GEI effects at vQTL-priotizied loci, or some proper quantification of the amount of vQTL variance we were able to explain using exposome-wide interactions?
+
+### Preliminary data
+
+An initial vQTL analysis for HbA1c was run in unrelated, European-ancestry participants from the UK Biobank (N ~ 340k). Levene's test was used, with covariates including sex, age, age-squared, genotyping array, and 10 genetic principal components. This was followed by a series of genome-wide GEI scans using exposures that may influence HbA1c (sex, age, BMI, and a score based on dietary principal components) to see whether the resulting loci would overlap with vQTL. These results serve as proof-of-concept for expansion into an exposome-wide approach.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=200,
+                      fig.path="../output/figures/vQTL_phewas/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer"), 
+  library, character.only=T))
+```
+
+```{r load-sumstats}
+exposures <- c(paste0("ffq_PC", 1:10), "ffq_PC_ERS10")
+minimal_ss <- lapply(exposures, function(dPC) {
+  read_tsv(paste0("../data/processed/main_ffq_PC_gwis_res/", dPC, "_merged_p0.01.gz")) %>%
+    filter(CHR != "X") %>%
+    mutate(CHR=as.integer(CHR))
+})
+names(minimal_ss) <- exposures
+```
+
+```{r prep-funcs}
+make_manhattan <- function(data, pval_col, ylim=NULL, main="") {
+  # Make a Manhattan plot
+  
+  data <- filter(data, data[[pval_col]] > 0)  # In case extremely low p-values are stored as zero
+  nlps <- -log10(data[[pval_col]])
+  
+  # Trim points in crowded regions (credit to RaMWAS package for code snippet)
+  yfac = as.integer(nlps * 100) + 1L
+  yorder = sort.list(yfac)
+  levels(yfac) = as.character(seq_len(max(yfac)))
+  class(yfac) = "factor"
+  ygroup = split(seq_along(yfac), yfac)
+  for (i in seq_along(ygroup)) {
+    if (length(ygroup[[i]]) > 300) {
+      ygroup[[i]] = sample(ygroup[[i]], size=150, replace=FALSE)
+    }
+  }
+  keep = unlist(ygroup, use.names=FALSE)
+  
+  CMplot::CMplot(
+    tibble(data$varID, data$CHR, data$POS, data[[pval_col]])[keep, ],
+    ylim=ylim,
+    type="p",
+    cex.lab=1,
+    plot.type="m",
+    cex=0.35,
+    threshold=5e-8,
+    threshold.col="gray",
+    amplify=F,
+    file.output=F,
+    main=main,
+    verbose=F
+  )
+}
+
+make_manhattan_with_highlights <- function(data, pval_col, ylims=NULL, main="",
+                                           highlight_col=NULL, 
+                                           highlight_colors=NULL,
+                                           highlight_labs=NULL) {
+  
+  data <- filter(data, data[[pval_col]] > 0)
+  nlps <- -log10(data[[pval_col]])
+  
+  # Trim points in crowded regions (credit to RaMWAS package for code snippet)
+  yfac = as.integer(nlps * 100) + 1L
+  yorder = sort.list(yfac)
+  levels(yfac) = as.character(seq_len(max(yfac)))
+  class(yfac) = "factor"
+  ygroup = split(seq_along(yfac), yfac)
+  for (i in seq_along(ygroup)) {
+    if (length(ygroup[[i]]) > 300) {
+      ygroup[[i]] = sample(ygroup[[i]], size=300, replace=FALSE)
+    }
+  }
+  keep = unlist(ygroup, use.names=FALSE)
+
+  data$highlight <- if (!is.null(highlight_col)) data[[highlight_col]] else 0
+  
+  d <- cbind(select(data, SNP=varID, CHR, POS, highlight), pvalue=nlps)[keep, ]
+  d$POS <- as.numeric(as.character(d$POS))
+  d$CHR <- factor(d$CHR, levels = 1:22)
+  d <- d[order(d$CHR, d$POS), ]
+  d$pos_index <- seq.int(nrow(d))
+  chr_lengths <- sapply(1:22, function(chr) max(d[d$CHR == chr, "POS"], na.rm=T))
+  chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+  d$x_coord <- chr_start_pos[d$CHR] + d$POS
+  d_sub <- d[, c("SNP", "CHR", "POS", "highlight", "pvalue", "pos_index", "x_coord")]
+  maxRows <- by(d_sub, d_sub$CHR, function(x) x[which.max(x$x_coord),])
+  minRows <- by(d_sub, d_sub$CHR, function(x) x[which.min(x$x_coord),])
+  milimits <- do.call(rbind, minRows)
+  malimits <- do.call(rbind, maxRows)
+  lims <- merge(milimits, malimits, by="CHR")
+  names(lims) <- c("Color", 
+                   "snpx", "posx", "expx", "px", "posidxx", "xcoordmin",
+                   "snpy", "posy", "expy", "py", "posidxy", "xcoordmax")
+  lims$av <- (lims$xcoordmin + lims$xcoordmax)/2
+  lims <- lims[order(lims$Color),]
+  
+  d$Color <- ifelse(d$highlight %in% names(highlight_colors), 
+                    d$highlight, d$CHR)
+  d <- arrange(d, as.integer(Color), desc(pvalue)) %>%
+    distinct(SNP, .keep_all=T)
+  newcols <- setNames(
+    c(rep(x=c("#AAAAAA", "#8A8A8A"), length.out=22), highlight_colors),  # Gray/dark gray for alternating chromosomes
+    c(levels(factor(lims$Color)), names(highlight_colors))
+  )
+  
+  p1 <- ggplot() +
+    geom_point(data=d, 
+               aes(x=x_coord, y=pvalue, color=factor(Color)), 
+               size=0.75, alpha=1) +
+    geom_hline(yintercept=-log10(5e-8), linetype="dashed", color="black") + 
+    scale_x_continuous(breaks=lims$av[c(1:16, 18, 20, 20, 22)], 
+                       labels=lims$Color[c(1:16, 18, 20, 20, 22)], 
+                       expand=c(0,0)) +
+    scale_y_continuous(name=expression(-log[10](italic(p)))) +
+    scale_colour_manual(name="Color", values=newcols,
+                        breaks=names(highlight_colors),
+                        labels=highlight_labs) +
+    scale_fill_manual(name="Color", values=newcols) +
+    labs(title=main) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_text(vjust = -1.5),
+          panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank())
+  if (!is.null(ylim)) p1 <- p1 + coord_cartesian(ylim=ylims)
+  p1
+}
+```
+
+```{r hba1c-vqtl}
+vqtl_ss <- read_tsv("../data/processed/hba1c_vqtl/hba1c_all_chr.vqtl",
+                    col_types=cols_only(SNP="c", Chr="i", bp="i", P="d")) %>%
+  filter(Chr != 23) %>%
+  select(varID=SNP, CHR=Chr, POS=bp, P) %>%
+  distinct(CHR, POS, .keep_all=T)
+
+make_manhattan(vqtl_ss, pval_col="P", main="HbA1c vQTL results")
+```
+
+```{r prune-vqtls}
+prune_chromosome <- function(chr_df, pval_col, locus_width) {
+  # Prune variants given a chromosome-specific summary statistic data frame
+  df <- arrange(chr_df, !!sym(pval_col))  # Sort by ascending p-value
+  pruned_df <- tibble()
+  while(nrow(df) > 0) {
+    pruned_df <- bind_rows(pruned_df, df[1, ])  # Add lowest p-value to pruned dataset
+    df <- filter(df, (POS < df$POS[1] - locus_width / 2) |  # Remove rest of variants in that distance-based locus
+                   (POS > df$POS[1] + locus_width / 2))
+  }
+  pruned_df
+}
+
+prune_suggestive_variants <- function(ss_df, pval_col, suggestive_thresh=1e-5,
+                                      locus_width=500000) {
+  # Prune variants across all chromosomes using a simple distance-based approach
+  ss_df %>%
+    filter(!!sym(pval_col) < suggestive_thresh) %>%
+    nest(data=-CHR) %>%
+    mutate(pruned_ss=map(data, prune_chromosome, pval_col, locus_width)) %>%
+    unnest(pruned_ss) %>%
+    select(-data) %>%
+    dplyr::rename(index_var=varID)
+}
+
+vqtl_ss_pruned <- prune_suggestive_variants(vqtl_ss, pval_col="P", 
+                                            suggestive_thresh=5e-8)
+```
+
+```{r compare_vqtls, fig.asp=1.2}
+read_GEM_output <- function(filepath) {
+  data.table::fread(filepath, stringsAsFactors=F, data.table=F, ) %>%
+    select(varID=SNPID, CHR, POS, P="P_Value_Interaction", contains("P_")) %>%
+    mutate(CHR=as.integer(CHR))
+}
+
+# Marginal effects GWAS
+hba1c_me_ss <- read_GEM_output("../data/processed/hba1c_vqtl/sex_merged_p0.01")
+
+# Series of GWIS
+gwis_filepath_list <- list(
+  sex="../data/processed/hba1c_vqtl/sex_merged_p0.01",
+  age="../data/processed/hba1c_vqtl/age_merged_p0.01",
+  bmi="../data/processed/hba1c_vqtl/bmi_merged_p0.01",
+  dPC_ERS="../data/processed/main_ffq_PC_gwis_res/ffq_PC_ERS10_merged_sugg"
+)
+gwis_df_list <- lapply(gwis_filepath_list, read_GEM_output)
+gwis_agg_df <- bind_rows(gwis_df_list, .id="exposure")
+
+# Manhattan plots for marginal + vQTL + interactions
+me_manhattan <- make_manhattan_with_highlights(
+  hba1c_me_ss, pval_col="P_Value_Marginal", ylims=c(2, 100), 
+  main="HbA1c standard GWAS"
+)
+vqtl_manhattan <- make_manhattan_with_highlights(
+  vqtl_ss, pval_col="P", ylims=c(2, 20), main="HbA1c vQTL"
+)
+gwis_manhattan <- make_manhattan_with_highlights(
+  mutate(gwis_agg_df, exposure=ifelse(P <  1e-5, exposure, "none")), 
+  pval_col="P", ylims=c(2, 20), main="HbA1c GxE",
+  highlight_col="exposure",
+  highlight_colors=setNames(brewer.pal(4, "Dark2"), 
+                            c("sex", "age", "bmi", "dPC_ERS")),
+  highlight_labs=c("Sex", "Age", "BMI", "dPC-ERS")
+)
+
+# Add vQTL shadow lines to all plots
+get_xcoords <- function(base_df, locus_df) {
+  chr_lengths <- sapply(1:22, function(chr) {
+    max(filter(base_df, CHR == chr)$POS, na.rm=T)
+  })
+  chr_start_pos <- cumsum(as.numeric(chr_lengths)) - chr_lengths
+  chr_start_pos[locus_df$CHR] + locus_df$POS
+}
+xcoords_list <- lapply(list(hba1c_me_ss, vqtl_ss, gwis_agg_df),
+                        get_xcoords, vqtl_ss_pruned)
+for (x in nrow(vqtl_ss_pruned)) {  
+  me_manhattan <- me_manhattan + 
+    geom_vline(xintercept=xcoords_list[[1]], linetype="dashed", alpha=0.7)
+  vqtl_manhattan <- vqtl_manhattan + 
+    geom_vline(xintercept=xcoords_list[[2]], linetype="dashed", alpha=0.5)
+  gwis_manhattan <- gwis_manhattan + 
+    geom_vline(xintercept=xcoords_list[[3]], linetype="dashed", alpha=0.5)
+}
+
+# Compile plots
+plot_grid(
+  me_manhattan,
+  vqtl_manhattan + 
+    annotate("text", x=3e8, y=17, size=3, label="Dashed lines\nrepresent vQTL loci"),
+  gwis_manhattan,
+  nrow=3, rel_heights=c(1, 1, 2),
+  align="v", axis="lr"
+)
+```

@@ -1,0 +1,32 @@
+# Data and R files
+data/*
+cache/*
+env/*
+opt/*
+doc/*
+output/*
+*.RData
+*.rds
+*.Rhistory
+
+# Results (for now)
+results/*
+
+# LaTeX helper files
+*.sty
+*.cls
+*.csl
+*.aux
+*.log
+*.out
+*.synctex.gz
+
+# Microsoft Office files
+*.docx
+*.pptx
+
+# Documentation
+doc/admin/*
+
+# Mac-specific
+*.DS_Store

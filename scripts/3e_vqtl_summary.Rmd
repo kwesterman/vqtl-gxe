@@ -1,0 +1,690 @@
+---
+output: html_document
+title: "High-level report on vQTL results for metabolic biomarkers"
+---
+
+Variance-QTL analysis was conducted for 20 metabolic traits in a four genetic ancestry groups from the UK Biobank (EUR, N~350k; AFR, N~6k; EAS, N~2k; SAS, N~7k). Biomarker phenotypes were pre-adjusted for age and 10 genetic PCs and standardized separately for males and females (see phenotype doc for details). UKB imputed genotype dosages (v3) were converted to hardcalls (if within 0.1 of 0/1/2, or set to missing) using PLINK2. vQTL analysis was conducted using the OSCA package (https://cnsgenomics.com/software/osca/), using Levene's test for median (essentially a one-way ANOVA for absolute deviations from the median within each genotype group) and a MAF filter of 1%. For comparison purposes, an accompanying mean-effect (standard) GWAS was conducted in PLINK2 using the same genotypes and adjusted phenotypes. The primary summaries here will focus on the multi-ancestry meta-analysis results.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
+                      fig.path="../output/3e_vqtl_summary/",
+                      cache.path="../cache/3e_vqtl_summary/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer", "GenomicRanges"), 
+  library, character.only=T))
+```
+
+```{r biomarkers, cache=2}
+biomarkers <- c(
+  "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
+  "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
+  "bilirubin_tot", "tg", "urea"
+)
+biomarkers_pretty <- c(
+  "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
+  "CysC", "Bilirubin-Dir", "GGT", "RG", "HbA1c", "HDL-C", "LDL-C", "LipA",
+  "Bilirubin-Tot", "TG", "Urea"
+)
+
+n_eff <- 16.2
+bonferroni <- 5e-8 / n_eff
+```
+
+```{r load-data, cache=2}
+# No INFO filter needed here due to prior INFO filtering in postprocessing script
+
+read_nom_vqtl <- function(bm, ancestry) {
+  if (ancestry == "MA") {
+    fread(paste0("../data/processed/vqtl_ss/metal/", bm, "_MA_1.tbl_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, P, Dir, ISq, HetP) %>%
+      separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+  } else {
+    fread(paste0("../data/processed/vqtl_ss/", 
+                 bm, "_", ancestry, "_vqtl_merged_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, CHR, POS, REF, ALT, AF, N, BETA, P) %>%
+      mutate(CHR=as.character(CHR))
+  }
+}
+
+read_nom_me <- function(bm, ancestry) {
+  if (ancestry == "MA") {
+    fread(paste0("../data/processed/main_effect_ss/metal/", bm, "_MA_1.tbl_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, P, Dir, ISq, HetP) %>%
+      separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+  } else {
+    fread(paste0("../data/processed/main_effect_ss/", 
+                 bm, "_", ancestry, "_ME_merged_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, CHR, POS, REF, ALT, N, BETA, P) %>%
+      mutate(CHR=as.character(CHR))
+  }
+}
+
+ancestries <- c("EUR", "AFR", "EAS", "SAS")
+
+vqtl_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  anc_list <- lapply(c(ancestries, "MA"), function(anc) {
+    read_nom_vqtl(bm, anc)
+  })
+  setNames(anc_list, c(ancestries, "MA"))
+})
+
+me_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  anc_list <- lapply(c(ancestries, "MA"), function(anc) {
+    read_nom_me(bm, anc)
+  })
+  setNames(anc_list, c(ancestries, "MA"))
+})
+
+meta_list <- list(
+  vqtl = map(vqtl_list, "MA"),
+  me = map(me_list, "MA")
+)
+
+# gc_lambdas <- c(
+#   alt=1.13, alb=1.01, alp=1.09, apoA=1.08, apoB=1.05, ast=1.09, hscrp=1.18, 
+#   chol=1.06, creatinine=1.04, cysC=1.08, bilirubin_dir=1.06, ggt=1.23, glu=1.03, 
+#   hba1c=1.08, hdl=1.09, ldl=1.05, lipA=1.03, bilirubin_tot=1.07, tg=1.17, 
+#   urea=1.06, Ca=1.01, igf1=1.04, oestradiol=1.02, phos=1.02, protein_tot=1.01, 
+#   rheum_factor=1.02, shbg=1.08, tes=1.05, urate=1.07, vitD=1.12
+# )
+gc_lambdas <- sapply(setNames(biomarkers, biomarkers), function(bm) {
+  scan(paste0("../data/processed/vqtl_ss/qq_plots/", bm, "_MA_1_lambda"))
+})
+```
+
+```{r pruning, cache=2, dependson=-1}
+prune_chromosome <- function(chr_df, pval_col, locus_width) {
+  # Prune variants given a chromosome-specific summary statistic data frame
+  df <- arrange(chr_df, !!sym(pval_col))  # Sort by ascending p-value
+  pruned_df <- tibble()
+  while(nrow(df) > 0) {
+    pruned_df <- bind_rows(pruned_df, df[1, ])  # Add lowest p-value to pruned dataset
+    df <- filter(df, (POS < df$POS[1] - locus_width / 2) |  # Remove rest of variants in that distance-based locus
+                   (POS > df$POS[1] + locus_width / 2))
+  }
+  pruned_df
+}
+
+prune_variants <- function(ss_df, pval_col, thresh=5e-8, locus_width=500000) {
+  # Prune variants across all chromosomes using a simple distance-based approach
+  if (min(ss_df[[pval_col]], na.rm=T) > thresh) return(tibble())
+  ss_df %>%
+    filter(!!sym(pval_col) < thresh) %>%
+    mutate(POS = as.numeric(POS)) %>%
+    nest(data=-CHR) %>%
+    mutate(pruned_ss=map(data, prune_chromosome, pval_col, locus_width)) %>%
+    unnest(pruned_ss) %>%
+    select(-data) %>%
+    dplyr::rename(index_var=SNP)
+}
+
+pruned_vqtl_ss <- lapply(vqtl_list, function(anc_vqtls) {
+  lapply(anc_vqtls, prune_variants, "P")
+})
+pruned_me_ss <- lapply(me_list, function(anc_mes) {
+  lapply(anc_mes, prune_variants, "P")
+})
+```
+
+```{r overlaps}
+find_overlaps <- function(df, pval_col, locus_width) {
+  # df should have all (pre-pruned) summary statistics concatenated into  
+  # single data frame with a column named "source" as ID
+  df <- arrange(df, !!sym(pval_col))  # Sort by ascending p-value
+  group_df <- tibble()
+  while(nrow(df) > 0) {
+    new_group_idx <- with(df, which(
+      (CHR == CHR[1]) & 
+        (POS >= POS[1] - locus_width / 2) & 
+        (POS <= POS[1] + locus_width / 2)
+    ))
+    new_group_df <- df[new_group_idx, ]
+    new_group_df$group_index_var <- df$index_var[1]
+    group_df <- bind_rows(group_df, new_group_df)
+    df <- df[-new_group_idx, ]
+  }
+  group_df
+}
+```
+
+## Meta-analysis results
+
+Due to correlations between biomarkers, the associated multiple hypothesis testing correction can be eased somewhat. Following the approach taken by Wang et al. 2019, we calculated the number of effective phenotypes using the eigenvalues of the biomarker covariance matrix (as taken from PCA) as: $(\Sigma_{k=1}^p\lambda_k)^2/\Sigma_{k=1}^p\lambda_k^2$.
+Using the set of 20 adjusted biomarkers in the European sample, this produced an estimate of 16.2 effective biomarkers, for a corrected p-value threshold of 5$\times$10^-8^ / 16.2 = 3.1$\times$10^-9^.
+
+```{r vqtl-me-overlaps, cache=2, dependson=c("biomarkers", "pruning")}
+vqtl_me_overlaps <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  vqtl_me_concat <- bind_rows(
+    list(vqtl=pruned_vqtl_ss[[bm]]$MA, me=pruned_me_ss[[bm]]$MA),
+    .id="source"
+  ) %>%
+    filter(P < bonferroni)
+  vqtl_me_overlap <- find_overlaps(vqtl_me_concat, "P", 500000)
+})
+```
+
+```{r vqtl-me-overlaps-table}
+vqtl_me_overlap_tbl <- map_dfr(vqtl_me_overlaps, function(vmo) {
+  vmo_wide <- vmo %>% 
+    group_by(group_index_var) %>% 
+    summarise(vqtl_locus="vqtl" %in% source, 
+              me_locus="me" %in% source, 
+              variants=paste(index_var, collapse=";"))
+  with(vmo_wide, tibble(
+    vqtls = sum(vqtl_locus),
+    vqtl_only = sum(vqtl_locus & !me_locus),
+    mes = sum(me_locus),
+    pct_vqtl_with_me = round(sum(vqtl_locus & me_locus) / sum(vqtl_locus) * 100),
+    pct_me_with_vqtl = round(sum(vqtl_locus & me_locus) / sum(me_locus) * 100)
+  ))
+}, .id="bm")
+
+vqtl_me_overlap_tbl %>%
+  mutate(GC_lambda = gc_lambdas[bm],
+         bm = biomarkers_pretty[which(biomarkers == bm)]) %>%
+  select(bm, GC_lambda, everything()) %>%
+  setNames(c("Biomarker", "GC_lambda", "# vQTLs", "# vQTLs w/out ME", "# MEs",
+             "% vQTLs w/ ME", "% MEs w/ vQTL")) %>%
+  kable(caption="Summary of meta-analysis results and overlap with genetic main effects") %>%
+  kable_styling()
+```
+
+### vQTL "pleiotropy"
+
+```{r biomarker-overlaps, cache=2, dependson="pruning"}
+bm_overlaps <- map(pruned_vqtl_ss, "MA") %>%
+  bind_rows(.id="bm") %>%
+  filter(P < bonferroni) %>%
+  find_overlaps("P", 500000)
+
+bm_overlap_df <- bm_overlaps %>%
+  group_by(group_index_var) %>% 
+  summarise(n=n(),
+            biomarkers=paste(bm, collapse=", "))
+```
+
+```{r biomarker-overlaps-outputs, fig.cap="A small number of loci show substantial pleiotropy of vQTL relationships.", out.width="60%"}
+bm_overlap_df %>%
+  ggplot(aes(x=n)) +
+  geom_bar() +
+  scale_x_continuous(breaks=seq(1, max(bm_overlap_df$n))) +
+  labs(x="# biomarkers per vQTL locus", y="# loci")
+
+bm_overlap_df %>%
+  filter(n >= 6) %>%
+  arrange(desc(n)) %>%
+  select(-n) %>%
+  setNames(c("Index variant", "Biomarkers")) %>%
+  kable(caption="Loci with vQTLs for at least 6 biomarkers") %>%
+  kable_styling()
+```
+
+The top variant here, supporting vQTLs for 10 biomarkers, is one of the two indicator variants involved in the APOE2/3/4 haplotypes.
+
+```{r manhattan-prep, cache=2, dependson="load-data"}
+vqtl_concat_minP <- bind_rows(meta_list$vqtl, .id="bm") %>%
+  group_by(SNP) %>%
+  filter(P == min(P, na.rm=T)) %>%
+  ungroup()
+
+me_concat_minP <- bind_rows(meta_list$me, .id="bm") %>%
+  group_by(SNP) %>%
+  filter(P == min(P, na.rm=T)) %>%
+  ungroup()
+```
+
+```{r manhattan, cache=2, dependson="manhattan-prep", fig.asp=1, fig.cap="Manhattan plot of all vQTL results. Minimum P per variant is shown. It is hard to glean useful information from this plot.", out.width="70%"}
+mh_data <- bind_rows(list(vqtl=vqtl_concat_minP, me=me_concat_minP), .id="source")  %>%
+  filter(!is.na(P)) %>%
+  mutate(P = ifelse(P == 0, min(1e-300, min(P[P != 0], na.rm=T)), P),  # Remove P = 0
+         nlp = -log10(P))
+
+# Trim points in crowded regions (credit to RaMWAS package for code snippet)
+yfac = as.integer(mh_data$nlp * 100) + 1L
+yorder = sort.list(yfac)
+yfac <- factor(yfac, levels=as.character(seq_len(max(yfac))))
+ygroup <- split(seq_along(yfac), yfac)
+for (i in seq_along(ygroup)) {
+  if (length(ygroup[[i]]) > 300) {
+    ygroup[[i]] <- sample(ygroup[[i]], size=300, replace=F)
+  }
+}
+keep <- unlist(ygroup, use.names=FALSE)
+
+mh_data <- mh_data %>%
+  select(SNP, CHR, POS, nlp, source) %>%
+  dplyr::slice(keep) %>%
+  mutate(POS = as.numeric(as.character(POS)),
+         CHR = factor(CHR, levels=1:22)) %>%
+  arrange(CHR, POS) %>%
+  mutate(pos_idx = seq(1, nrow(.)))
+
+chr_lengths <- sapply(1:22, function(chr) with(mh_data, max(POS[CHR == chr])))
+chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+
+mh_data <- mh_data %>%
+  mutate(x_coord = chr_start_pos[CHR] + POS,
+         color = CHR,
+  ) %>%
+  arrange(as.integer(color), nlp)
+
+lims <- mh_data %>%
+  group_by(CHR) %>%
+  summarise(avg_coord = (min(x_coord) + max(x_coord)) / 2)
+
+mh_cols <- setNames(
+  rep(x=c("#999999", "#555555"), length.out=22),  # Gray/dark gray for alternating chromosomes
+  levels(factor(lims$CHR))
+)
+
+p1 <- ggplot() +
+  geom_point(data=filter(mh_data, source == "vqtl"), 
+             aes(x=x_coord, y=nlp, color=factor(color)), 
+             size=0.6, alpha=1) +
+  geom_hline(yintercept=-log10(bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  scale_y_continuous(limits=c(2, 102), expand=c(0, 0),
+                     name=expression(-log[10](italic(p))*" for vQTL effect")) +
+  scale_colour_manual(values=mh_cols, guide=F) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_text(vjust = -1.5),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+p2 <- ggplot() +
+  geom_point(data=filter(mh_data, source == "me"), 
+             aes(x=x_coord, y=nlp, color=factor(color)), 
+             size=0.75, alpha=1) +
+  geom_hline(yintercept=-log10(bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  # scale_y_continuous(name=expression(-log[10](italic(p)))) +
+  scale_colour_manual(values=mh_cols, guide=F) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) +
+  scale_y_reverse(limits=c(102, 0), expand=c(0, 0),
+                  name=expression(-log[10](italic(p))*" for main effect"))
+
+plot_grid(p1 + guides(color=F), 
+          p2 + guides(color=F), 
+          align='v', nrow=2, rel_heights=c(5, 5))
+
+# make_manhattan(vqtl_concat_minP, "P", ylims=c(2, 100))
+# make_manhattan(me_concat_minP, "P", ylims=c(2, 100))
+```
+
+## Zoom in on ALT as an example
+
+```{r alt-manhattan, cache=2, dependson="load-data", fig.asp=1, out.width="80%"}
+alt_mh_thresh <- 100
+alt_me_nom <- filter(me_list$alt$MA, P < 0.01, P >= 1e-5)$SNP
+alt_me_sugg <- filter(me_list$alt$MA, P < 1e-5, P >= 5e-8)$SNP
+alt_me_gw <- filter(me_list$alt$MA, P < 5e-8)$SNP
+alt_vqtl_gw <- filter(vqtl_list$alt$MA, P < 5e-8)$SNP
+alt_mh_data <- bind_rows(list(vqtl=vqtl_list$alt$MA, 
+                              me=me_list$alt$MA), 
+                         .id="source")  %>%
+  filter(!is.na(P)) %>%
+  mutate(P = ifelse(P == 0, min(1e-300, min(P[P != 0], na.rm=T)), P),  # Remove P = 0
+         nlp = -log10(P)) %>%
+  mutate(nlp = pmin(nlp, alt_mh_thresh)) %>%
+  # mutate(color = factor(case_when(
+  #   source == "me" ~ CHR,
+  #   P >= alt_mh_thresh ~ CHR,
+  #   SNP %in% alt_me_nom ~ "me_nom",
+  #   SNP %in% alt_me_sugg ~ "me_sugg",
+  #   SNP %in% alt_me_gw ~ "me_gw",
+  #   TRUE ~ CHR
+  # ), levels=c(1:22, "me_nom", "me_sugg", "me_gw")))
+  mutate(color = factor(case_when(
+    source == "vqtl" ~ CHR,
+    # nlp >= alt_mh_thresh ~ CHR,
+    SNP %in% alt_vqtl_gw ~ "vqtl_gw",
+    TRUE ~ CHR
+  ), levels=c(1:22, "vqtl_gw")))
+
+# Trim points in crowded regions (credit to RaMWAS package for code snippet)
+yfac = as.integer(alt_mh_data$nlp * 100) + 1L
+yorder = sort.list(yfac)
+yfac <- factor(yfac, levels=as.character(seq_len(max(yfac))))
+ygroup <- split(seq_along(yfac), yfac)
+for (i in seq_along(ygroup)) {
+  if (length(ygroup[[i]]) > 300) {
+    ygroup[[i]] <- sample(ygroup[[i]], size=300, replace=F)
+  }
+}
+keep <- unlist(ygroup, use.names=FALSE)
+
+alt_mh_data <- alt_mh_data %>%
+  select(SNP, CHR, POS, nlp, source, color) %>%
+  dplyr::slice(keep) %>%
+  mutate(POS = as.numeric(as.character(POS)),
+         CHR = factor(CHR, levels=1:22)) %>%
+  arrange(CHR, POS) %>%
+  mutate(pos_idx = seq(1, nrow(.)))
+
+chr_lengths <- sapply(1:22, function(chr) with(alt_mh_data, max(POS[CHR == chr])))
+chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+
+alt_mh_data <- alt_mh_data %>%
+  mutate(x_coord = chr_start_pos[CHR] + POS) %>%
+  arrange(as.integer(color), nlp)
+
+lims <- alt_mh_data %>%
+  group_by(CHR) %>%
+  summarise(avg_coord = (min(x_coord) + max(x_coord)) / 2)
+
+mh_cols <- setNames(
+  c(rep(c("#999999", "#555555"), length.out=22),  # Gray/dark gray for alternating chromosomes
+    brewer.pal(4, "Dark2")),
+  c(levels(factor(lims$CHR)),
+    "me_nom", "me_sugg", "me_gw", "vqtl_gw")
+)
+
+alt_p1 <- ggplot() +
+  geom_point(data=filter(alt_mh_data, source == "vqtl"), 
+             aes(x=x_coord, y=nlp, color=color), 
+             size=0.6, alpha=1) +
+  geom_hline(yintercept=-log10(bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  scale_y_continuous(limits=c(2, alt_mh_thresh), expand=c(0, 0),
+                     name=expression(-log[10](italic(p))*" for vQTL effect")) +
+  scale_colour_manual(values=mh_cols) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_text(vjust = -1.5),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+alt_p2 <- ggplot() +
+  geom_point(data=filter(alt_mh_data, source == "me"), 
+             aes(x=x_coord, y=nlp, color=factor(color)), 
+             size=0.75, alpha=1) +
+  geom_hline(yintercept=-log10(bonferroni_thresh), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  # scale_y_continuous(name=expression(-log[10](italic(p)))) +
+  scale_colour_manual(values=mh_cols) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) +
+  scale_y_reverse(limits=c(alt_mh_thresh, 0), expand=c(0, 0),
+                  name=expression(-log[10](italic(p))*" for main effect"))
+
+alt_legend <- get_legend(
+  ggplot(filter(alt_mh_data, grepl("vqtl_", color))) +
+    geom_point(aes(x=x_coord, y=nlp, color=color)) +
+    scale_color_manual(name="", values=tail(mh_cols, 1),
+                       # labels=c("Main effect P < 0.01", "Main effect P < 1e-5",
+                       #          "Main effect P < 5e-8", "vQTL P < 5e-8"))
+                         labels="vQTL P < 5e-8")
+)
+
+alt_plts <- plot_grid(alt_p1 + guides(color=F), 
+                      alt_p2 + guides(color=F), 
+                      align='v', nrow=2, rel_heights=c(5, 5))
+plot_grid(alt_plts, alt_legend, ncol=2, rel_widths=c(6, 1))
+```
+
+```{r alt-novel-loci}
+vqtl_me_overlaps$alt %>%
+  group_by(group_index_var) %>%
+  filter(!any(source == "me")) %>%
+  ungroup() %>%
+  select(index_var, P, Dir, HetP) %>%
+  mutate(P = as.character(signif(P, digits=2)),
+         HetP = as.character(signif(HetP, digits=2))) %>%
+  arrange(P) %>%
+  setNames(c("Index variant", "P-vQTL", "Effect signs", "P-heterogeneity")) %>%
+  kable(caption="\"Novel\" ALT vQTL loci (without a genetic main effect)") %>%
+  kable_styling()
+```
+
+```{r merged}
+vqtl_merged <- bind_rows(meta_list$vqtl, .id="bm")
+me_merged <- bind_rows(meta_list$me, .id="bm")
+```
+
+### ADH1B variant for ALT and other biomarkers
+
+rs1229984 in *ADH1B* affects alcohol processing in the liver and might be expected to interact with alcohol intake in relation to liver health markers such as ALT.
+
+```{r adh1b-example}
+adh1b_vqtl <- vqtl_merged %>%
+  filter(grepl("4:100239319_", SNP)) %>%
+  select(bm, SNP, P)
+
+adh1b_me <- me_merged %>%
+  filter(grepl("4:100239319_", SNP)) %>%
+  select(bm, SNP, P)
+
+full_join(adh1b_vqtl, adh1b_me, by=c("bm", "SNP"), suffix=c("-vQTL", "-ME")) %>%
+  mutate_at(vars(contains("P-")), ~format(., scientific=T, digits=2)) %>%
+  mutate_at(vars(contains("P-")), ~ifelse(grepl("NA", .), ">0.01", .)) %>%
+  dplyr::rename(Biomarker=bm) %>%
+  kable() %>%
+  kable_styling()
+```
+
+The variant has a stronger vQTL than main effect for ALT, AST, and GGT, and passes genome-wide significance for ALT. Promising!
+
+<!--
+## Specific examples
+
+### LIPC
+
+rs1800588 in LIPC has been shown to interact with lifestyle factors in relation to lipids and insulin sensitivity.
+
+```{r lipc-example, eval=F}
+lipc_vqtl <- vqtl_merged %>%
+  filter(grepl("15:58723675_", SNP)) %>%
+  select(bm, SNP, P)
+
+lipc_me <- me_merged %>%
+  filter(grepl("15:58723675_", SNP)) %>%
+  select(bm, SNP, P)
+
+full_join(lipc_vqtl, lipc_me, by=c("bm", "SNP"), suffix=c("-vQTL", "-ME")) %>%
+  mutate_at(vars(contains("P-")), ~format(., scientific=T, digits=3)) %>%
+  mutate_at(vars(contains("P-")), ~ifelse(grepl("NA", .), ">0.01", .)) %>%
+  kable() %>%
+  kable_styling()
+```
+-->
+
+## Digging into novel vQTL hits
+
+Using a naive search for variants where P-vQTL < `r signif(bonferroni, 2)` and P-ME > `r signif(bonferroni, 2)`, for which the loci may not be known with respect to the biomarker in question:
+
+```{r top-novel-vqtl}
+gw_vqtl <- vqtl_merged %>%
+  filter(P < bonferroni) %>%
+  select(bm, SNP, P, Dir)
+gw_vqtl_with_me <- left_join(gw_vqtl, select(me_merged, bm, SNP, P), 
+                             by=c("bm", "SNP"), suffix=c("_vqtl", "_me"))
+top_novel_vqtl_tbl <- filter(gw_vqtl_with_me, P_me > bonferroni | is.na(P_me)) %>%
+  select(bm, SNP, P_vqtl, Dir, P_me) %>%
+  arrange(P_vqtl) %>%
+  group_by(bm) %>%
+  dplyr::slice(1) %>%
+  ungroup()
+
+top_novel_vqtl_tbl %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  arrange(P_vqtl) %>%
+  mutate_at(vars(contains("P_")), ~format(., scientific=T, digits=2)) %>%
+  mutate_at(vars(contains("P_")), ~ifelse(grepl("NA", .), ">0.01", .)) %>%
+  kable(caption="Top vQTL variants without main effects per biomarker") %>%
+  kable_styling()
+```
+
+Top hits include: 
+
+* LipA: rs80145669, within an intron of LipA
+* ApoB, TC, & LDL-C: rs947249177, about 1kb downstream of APOE
+
+## Ancestry-specific results
+
+Note: These are evaluated at a non-corrected threshold of 5e-8.
+
+```{r ancestry-overlaps, cache=2, dependson="pruning"}
+anc_overlaps <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  anc_concat <- bind_rows(pruned_vqtl_ss[[bm]][ancestries], .id="ancestry")
+  anc_overlap <- find_overlaps(anc_concat, "P", 500000)
+})
+```
+
+```{r ancestry-overlap-table}
+anc_overlap_tbl <- map_dfr(anc_overlaps, function(vmo) {
+  vmo_summ <- vmo %>% 
+    group_by(group_index_var) %>% 
+    summarise(eur = "EUR" %in% ancestry,
+              afr = "AFR" %in% ancestry,
+              eas = "EAS" %in% ancestry,
+              sas = "SAS" %in% ancestry,
+              eur_only = all(ancestry == "EUR"),
+              nonEur_only = !("EUR" %in% ancestry),
+              multiAncestry = n() >= 2)
+  with(vmo_summ, tibble(
+    `European` = sum(eur),
+    `West African` = sum(afr),
+    `East Asian` = sum(eas),
+    `South Asian` = sum(sas),
+    `European only` = sum(eur_only),
+    `Non-European only` = sum(nonEur_only),
+    `Multi-ancestry` = sum(multiAncestry)
+  ))
+}, .id="Biomarker")
+
+anc_overlap_tbl %>%
+  mutate(Biomarker = biomarkers_pretty[match(Biomarker, biomarkers)]) %>%
+  kable(caption="vQTL counts per biomarker") %>%
+  kable_styling()
+```
+
+## Do we replicate results from Wang et al. 2019?
+
+An additional vQTL analysis was conducted for BMI in the European group for the purposes of comparison with the results from Wang et al. Though there are small differences in the preprocessing steps used, we would expect that our results would match fairly closely.
+
+```{r bmi-comparison, out.width="70%"}
+bmi_vqtl_df <- fread("../data/processed/vqtl_ss/bmi_EUR_vqtl_merged_nom",
+                     data.table=F, stringsAsFactors=F)
+bmi_pruned <- prune_variants(bmi_vqtl_df, "P", 2e-9)
+
+bmi_mh_data <- bmi_vqtl_df %>%
+  filter(!is.na(P)) %>%
+  mutate(P = ifelse(P == 0, min(1e-300, min(P[P != 0], na.rm=T)), P),  # Remove P = 0
+         nlp = -log10(P))
+
+# Trim points in crowded regions (credit to RaMWAS package for code snippet)
+yfac = as.integer(bmi_mh_data$nlp * 100) + 1L
+yorder = sort.list(yfac)
+yfac <- factor(yfac, levels=as.character(seq_len(max(yfac))))
+ygroup <- split(seq_along(yfac), yfac)
+for (i in seq_along(ygroup)) {
+  if (length(ygroup[[i]]) > 300) {
+    ygroup[[i]] <- sample(ygroup[[i]], size=300, replace=F)
+  }
+}
+keep <- unlist(ygroup, use.names=FALSE)
+
+bmi_mh_data <- bmi_mh_data %>%
+  select(SNP, CHR, POS, nlp) %>%
+  dplyr::slice(keep) %>%
+  mutate(POS = as.numeric(as.character(POS)),
+         CHR = factor(CHR, levels=1:22)) %>%
+  arrange(CHR, POS) %>%
+  mutate(pos_idx = seq(1, nrow(.)))
+
+chr_lengths <- sapply(1:22, function(chr) with(bmi_mh_data, max(POS[CHR == chr])))
+chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+
+bmi_mh_data <- bmi_mh_data %>%
+  mutate(x_coord = chr_start_pos[CHR] + POS) %>%
+  arrange(as.integer(CHR), nlp)
+
+lims <- bmi_mh_data %>%
+  group_by(CHR) %>%
+  summarise(avg_coord = (min(x_coord) + max(x_coord)) / 2)
+
+mh_cols <- setNames(
+  rep(c("#999999", "#555555"), length.out=22),  # Gray/dark gray for bmiernating chromosomes
+  levels(factor(lims$CHR))
+)
+
+bmi_p1 <- ggplot() +
+  geom_point(data=bmi_mh_data,
+             aes(x=x_coord, y=nlp, color=CHR), 
+             size=0.6, alpha=1) +
+  geom_hline(yintercept=-log10(2e-9), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  scale_y_continuous(limits=c(2, 80), expand=c(0, 0),
+                     name=expression(-log[10](italic(p))*" for BMI vQTL effect")) +
+  scale_colour_manual(values=mh_cols) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_text(vjust = -1.5),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.position="none")
+bmi_p1
+```
+
+![](../doc/wang2019_bmi_manhattan.jpg)
+
+## Onto the EWIS
+
+```{r vqtl-selection}
+vqtl_var_df <- bind_rows(
+  map(pruned_vqtl_ss, bind_rows, .id="ancestry"), .id="bm"
+) %>%
+  select(index_var, CHR, POS, REF, ALT, bm, ancestry, P)
+
+vqtl_var_df %>%
+  write_csv("../data/processed/ewis/ewis_variant_data.csv")
+
+vqtl_var_df %>%
+  arrange(as.numeric(CHR), as.numeric(POS)) %>%
+  mutate(CHR = str_pad(CHR, 2, pad="0"),
+         chr_pos = paste(CHR, POS, sep=":")) %>%
+  distinct(chr_pos) %>% 
+  select(chr_pos) %>%
+  write_csv("../data/processed/ewis/ewis_variants.txt", col_names=F)
+```
+
+The `r nrow(distinct(filter(vqtl_var_df, ancestry == "MA", P < bonferroni), index_var))` variants passing a multiple testing-corrected genome-wide threshold (p = `r signif(bonferroni, 2)`) will be taken forward for the formal analysis. However, all `r nrow(distinct(filter(vqtl_var_df, P < bonferroni), index_var))` index variants passing 5e-8 in the meta-analysis or any ancestry-specific analysis will be tested to have these results available.
+
+## Biomarker distributions (for reference)
+
+```{r biomarker-histograms, fig.asp=1}
+phenos <- read_csv("../data/processed/vqtl_phenos_EUR.csv")
+
+hist_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  ggplot(phenos, aes_string(x=paste0(bm, "_adj"))) +
+    geom_histogram(bins=30) +
+    labs(x=biomarkers_pretty[which(biomarkers == bm)], y="")
+})
+
+do.call(plot_grid, c(hist_list, ncol=4))
+```

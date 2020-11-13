@@ -1,0 +1,162 @@
+---
+output: html_document
+title: "Initial PHESANT results"
+---
+
+PHESANT is a software program for running phenome-wide association studies in UK Biobank. It was adapted by Ben Neale's lab for the purposes of conducting their "Mega-GWAS" study across thousands of phenotypes (https://github.com/astheeggeggs/PHESANT), where the updated version is used only for the purposes of semi-automated phenotype wrangling to derive "well-behaved" variables for analysis. Here, this modified PHESANT tool is used to derive a set of thousands of phenotypes for use as exposures in gene-environment interaction testing.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
+                      fig.path="../output/4b_phesant_summary/",
+                      cache.path="../cache/4d_phesant_summary/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot",
+    "pheatmap", "RColorBrewer"), 
+  library, character.only=T))
+```
+
+![](../doc/phesant_diagram.png)
+
+Basic inputs to PHESANT:
+
+* Variable info file: one row per variable, with variable ID, type, etc.
+* Data coding file: defines default values, value reassignments, and ordinal ordering for each data coding (which may be shared across many variables)
+* Phenotype file: contains the raw phenotype data, with headers of the form x[fieldID]\_[visit]\_[arrayNum]
+
+# Variable inputs
+
+The most recent variable info file available from the modified PHESANT repository (as of January 2020) has 3794 variables, some of which are excluded from the phenotype processing steps.
+
+```{r neale-variables}
+neale_vi <- read_tsv("../opt/PHESANT/variable-info/outcome_info_final_multi_ancestry_jan2020.tsv", na="NA")
+
+neale_exclusions <- c(
+  "NOT_AVAILABLE"="ICD9 codes",
+  "YES-ACE"="'Assessment center environment' variables that do not directly describe the participant",
+  "YES-AGE"="Age variables",
+  "YES-ASSESSMENT-CENTRE"="Assessment center",
+  "YES-BIOBANK-SUGGESTED-VARIABLE"="Biobank suggested, but not of interest",
+  "YES-CAT-SIN-MUL-VAL"="'Categorical single' types but had multiple array values",
+  "YES-GENETIC"="Genetic description variables",
+  "YES-SENSITIVE"="Sensitive/restricted access",
+  "YES-SEX"="Sex fields",
+  "YES-NEALELAB"="Additional fields removed"
+)
+
+neale_vi %>%
+  mutate(EXCLUDED_NEALE = ifelse(grepl("YES-NEALELAB", EXCLUDED_NEALE),
+                                 "YES-NEALELAB", EXCLUDED_NEALE)) %>%
+  filter(EXCLUDED_NEALE != "") %>%
+  group_by(EXCLUDED_NEALE) %>%
+  summarise(n_vars = n()) %>%
+  mutate(Reason = neale_exclusions[EXCLUDED_NEALE]) %>% 
+  as_tibble() %>%  # Removes row names
+  select(`Reason for exclusion` = Reason, `# variables`=n_vars) %>%
+  kable(caption="Neale lab UKB variable exclusions") %>%
+  kable_styling()
+```
+
+```{r my-variables}
+# vi <- neale_vi %>%
+#   mutate(EXCLUDED = case_when(
+#     EXCLUDED_NEALE %in% c("YES-SEX", "Yes-AGE", "YES-ASSESSMENT-CENTRE") ~ "",  # Neale exclusions to be kept
+#     EXCLUDED_NEALE != "" ~ "REMOVE",  # Otherwise, remove all Neale exclusions
+#     Category %in% c(43:50, 2000:2025, 100092:100093) ~ "REMOVE",
+#     TRUE ~ ""
+#   )) %>%
+#   select(FieldID, CAT_MULT_INDICATOR_FIELDS, CAT_SINGLE_TO_CAT_MULT,
+#          DATA_CODING, Path, Category, Field, ValueType, Units, Notes,
+#          Link, EXCLUDED) %>%
+#   filter(EXCLUDED == "",
+#          Field != "")
+# 
+# write_tsv(vi, "../data/processed/phesant_phenos/ewis_variable_info.tsv")
+
+vi <- read_tsv("../data/processed/phesant_phenos/ewis_variable_info.tsv")
+```
+
+Some of these variables were excluded as outcomes, but could be valuable as exposures. This includes sex, age, and assessment center above. Some of the many variables excluded with the generic "YES-NEALELAB" above may be valuable, but will be left out for the moment.
+
+Additional exposure exclusions:
+
+* Disease outcomes
+    - Algorithmically-defined (categories 43-50)
+    - Hospital inpatient (categories 2000-2025)
+    - Cancer register (category 100092)
+    - Death register (category 100093)
+* Medication (category 100075)? (not yet excluded)
+
+After exclusions, `r nrow(vi)` variables remain for processing.
+
+```{r variable-categories}
+set.seed(1)
+
+vi %>%
+  separate(Path, into=paste0("Category_Level_", 1:6), sep=" > ", remove=F) %>%
+  group_by(Category_Level_1) %>%
+  summarise(n_vars=n(),
+            # examples=paste(Field[1], Field[n()], sep="; ")) %>%
+            examples=paste(sample(Field, 3), collapse="; ")) %>%
+  arrange(desc(n_vars)) %>%
+  kable(caption="Variables by top-level categories") %>%
+  kable_styling()
+
+vi %>%
+  separate(Path, into=paste0("Category_Level_", 1:6), sep=" > ", remove=F) %>%
+  group_by(Category_Level_2) %>%
+  summarise(n_vars=n(),
+            examples=paste(Field[1], Field[n()], sep="; ")) %>%
+  arrange(desc(n_vars)) %>%
+  kable(caption="Variables by level 2 categories") %>%
+  kable_styling()
+```
+
+# PHESANT results
+
+```{r variable-counts}
+variable_flow_counts <- read_csv("../data/processed/phesant_phenos/variable-flow-counts-1-1.txt") %>%
+  # mutate(Category = case_when(
+  #   name == "notinphenofile" ~ "Not in phenotype file",
+  #   name == "catMul.binary" ~ "Multiple vategorical -> binary",
+  #   name == "int.continuous" ~ "Integer -> continuous",
+  #   name == "int.onevalue" ~ "SKIP (integer with one value)",
+  #   name == "int.binary" ~ "Integer -> binary",
+  #   name == "int.catord" ~ "Integer -> ordinall",
+  #   name == "cont.onevalue" ~ "SKIP (continuous with one value)",
+  #   name == "cont.binary" ~ "Continuous -> binary",
+  #   name == "cont.ordcattry.ordcat" ~ "Continuous -> ordinal by binning",
+  #   grepl("cont\\.ordcattry\\.smallbins", name) ~ "SKIP (continuous -> binary but bins too small)",
+  #   name == "cont.ordcattry.binsbinary" ~ "Continuous -> binary by binning",
+  #   name == "cont.main" ~ "Continuous",
+  #   name == "cont.main.5000" ~ "SKIP (continuous with <5000 data points)",
+  #   name == "catSin.onevalue" ~ "SKIP (single categorical with one value)",
+  #   name == "catSin.case3" ~ "Single categorical (2 values) -> binary",
+  #   name == "catSin.case2" ~ "Single categorical (unordered) -> binary",
+  #   name == "catSin.case1" ~ "Single categorical (ordered) -> ordinal",
+  #   name == "unordCat.5000" ~ "SKIP (unordered categorical with <5000 data points)",
+  #   TRUE ~ name
+  # ))
+  mutate(Category = case_when(
+    name == "excluded.catMul" ~ "Excluded (multiple categorical input)",
+    name == "excluded.catSin" ~ "Excluded (single categorical input)",
+    name == "excluded.cont" ~ "Excluded (continuous input)",
+    name == "excluded.int" ~ "Excluded (integer input)",
+    name == "success.binary" ~ "Succesful (binary output)",
+    name == "success.continuous" ~ "Successful (continuous output)",
+    name == "success.ordCat" ~ "Successful (ordinal output)",
+    name == "success.unordCat" ~ "Successful (unordered categorical output)",
+    TRUE ~ ""
+  ))
+
+variable_flow_counts %>%
+  filter(Category != "") %>%
+  select(Category, countValue) %>%
+  setNames(c("Category", "Count")) %>%
+  kable(caption="PHESANT variable counts")
+```
+
+So, in total, there are approximately 2000 resulting exposures to be used for exposome-wide interaction analysis.
+
+# Next steps
+
+* How to assess reasonable completeness of our currently-available phenotypes in the Florez project? Do any more need to be requested? Maybe this can wait until after the first EWIS round.

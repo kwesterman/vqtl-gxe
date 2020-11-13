@@ -1,0 +1,217 @@
+---
+output: html_document
+title: "Phenotype QC for UK Biobank vQTL analysis"
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, 
+                      fig.path="../output/2b_vqtl_phenos_summary/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "tidyverse", "cowplot"), 
+  library, character.only=T))
+```
+
+```{r read-phenos}
+raw_phenos <- read_csv("../data/processed/vqtl_phenos_raw.csv")
+eur_phenos <- read_csv("../data/processed/vqtl_phenos_EUR.csv")
+afr_phenos <- read_csv("../data/processed/vqtl_phenos_AFR.csv")
+eas_phenos <- read_csv("../data/processed/vqtl_phenos_EAS.csv")
+sas_phenos <- read_csv("../data/processed/vqtl_phenos_SAS.csv")
+```
+
+## Exclusion criteria
+
+* No diabetes (self-report of diagnosed diabetes; field 2443)
+* No coronary heart disease (self-report of diagnosed MI or angina; field 6150)
+* No liver cirrhosis (ICD-10 codes K70.2-4, K71.7, K74.X; field 41202 (primary) or 41204 (secondary))
+* No end-stage renal disease (algorithmically-defined; field 42026)
+
+```{r exclusion-criteria}
+raw_phenos_anc <- raw_phenos %>%
+  mutate(ancestry = case_when(
+    id %in% eur_phenos$id ~ "EUR",
+    id %in% afr_phenos$id ~ "AFR",
+    id %in% eas_phenos$id ~ "EAS",
+    id %in% sas_phenos$id ~ "SAS",
+    TRUE ~ as.character(NA)
+  )) %>%
+  filter(!is.na(ancestry))
+
+raw_phenos_anc %>% 
+  group_by(ancestry, diabetes) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "diabetes", values_from = "n") %>%
+  kable(caption = "Diabetes status") %>%
+  kable_styling(full_width = F)
+
+raw_phenos_anc %>% 
+  group_by(ancestry, CHD) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "CHD", values_from = "n") %>%
+  kable(caption = "CHD status") %>%
+  kable_styling(full_width = F)
+
+raw_phenos_anc %>% 
+  group_by(ancestry, cirrhosis) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "cirrhosis", values_from = "n") %>%
+  kable(caption = "Cirrhosis status") %>%
+  kable_styling(full_width = F)
+
+raw_phenos_anc %>% 
+  group_by(ancestry, esrd) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "esrd", values_from = "n") %>%
+  kable(caption = "ESRD status") %>%
+  kable_styling(full_width = F)
+
+raw_phenos_anc %>%
+  filter(!diabetes, !CHD, !cirrhosis, !esrd) %>%
+  group_by(ancestry) %>%
+  summarise(n = n()) %>%
+  kable(caption = "Sample sizes after exclusions") %>%
+  kable_styling(full_width = F)
+```
+
+## Biomarker preprocessing for vQTL analysis
+
+```{r biomarkers}
+ukb_biomarker_fields <- c(
+  alt = 30620, alb = 30600, alp = 30610, apoA = 30630, apoB = 30640, 
+  ast = 30650, hscrp = 30710, Ca = 30680, chol = 30690, creatinine = 30700, 
+  cysC = 30720, bilirubin_dir = 30660, ggt = 30730, glu = 30740, hba1c = 30750, 
+  hdl = 30760, igf1 = 30770, ldl = 30780, lipA = 30790, oestradiol = 30800, 
+  phos = 30810, rheum_factor = 30820, shbg = 30830, tes = 30850, 
+  bilirubin_tot = 30840, protein_tot = 30860, tg = 30870, urate = 30880, 
+  urea = 30670, vitD = 30890 
+)
+
+biomarkers <- names(ukb_biomarker_fields)
+biomarkers_clean <- c(
+  "Alanine aminotransferase", "Albumin", "Alkaline phosphatase", 
+  "Apolipoprotein A", "Apolipoprotein B", "Aspartate aminotrasferase", 
+  "High-sensitivity C-reactive protein", "Calcium", "Total cholesterol", 
+  "Creatinine", "Cystatin C", "Direct bilirubin", "Gamma-glutamyl transferase", 
+  "Random glucose", "Glycated hemoglobin", 
+  "High-density lipoprotein cholesterol", "Insulin-like growth factor 1", 
+  "Low-density lipoprotein cholesterol", "Lipoprotein A", "Estradiol", 
+  "Phosphate", "Rheumatoid factor", "SHBG", "Testosterone", "Total bilirubin", 
+  "Total protein", "Triglycerides", "Urate", "Urea", "Vitamin D"
+)
+biomarkers_short <- c(
+  "ALT", "Alb", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "Ca", "TC", "Creatinine",
+  "CysC", "DBIL", "GGT", "RG", "HbA1c", "HDL-C", "IGF-1", "LDL-C", "LipA",
+  "E2", "Phos", "RF", "SHBG", "Tes", "TBIL", "TPROT", "TG", "Urate", "Urea", 
+  "VitD"
+)
+biomarker_units <- c(
+  "U/L", "g/L", "U/L", "g/L", "g/L", "U/L", "mg/L", "mmol/L", "mmol/L", "umol/L",
+  "mg/L", "umol/L", "U/L", "mmol/L", "mmol/mol", "mmol/L", "nmol/L", "mmol/L",
+  "nmol/L", "pmol/L", "mmol/L", "IU/mL", "nmol/L", "nmol/L", "umol/L", "g/L",
+  "mmol/L", "umol/L", "mmol/L", "nmol/L"
+)
+metabolic <- c(
+  T, T, T, T, T, T, T, F, T, T, 
+  F, T, T, T, T, T, F, T, T, F, 
+  F, F, F, F, T, F, T, F, T, F
+)
+
+tibble(
+  Biomarker = biomarkers_clean,
+  Abbreviation = biomarkers_short,
+  Units = biomarker_units,
+  `UKB Field` = ukb_biomarker_fields,
+  Metabolic = ifelse(metabolic, "Yes", "No")
+) %>%
+  kable(caption = "Blood biomarkers measured in the UK Biobank") %>%
+  kable_styling(full_width = F)
+```
+
+Following the approach of Wang et al. 2013 (modified to conduct the *entire* process separately in males and females):
+
+1. Take residuals from linear model adjusting for age and 10 genetic PCs
+2. Remove outliers (>5 SDs from the mean)
+3. Standardize residuals (mean zero, variance one)
+
+### Processed biomarker distributions
+
+```{r distributions}
+merged_phenos <- bind_rows(list(
+  EUR = eur_phenos,
+  AFR = afr_phenos,
+  EAS = eas_phenos,
+  SAS = sas_phenos
+), .id = "ancestry")
+
+for (bm in biomarkers) {
+  # plt_raw <- ggplot(eur_phenos, aes_string(x=bm)) +
+  #   geom_histogram()
+  # plt_adj_eur <- ggplot(eur_phenos, aes_string(x=paste0(bm, "_adj"))) +
+  #   geom_histogram()
+  # plt_adj_afr <- ggplot(afr_phenos, aes_string(x=paste0(bm, "_adj"))) +
+  #   geom_histogram()
+  # plt_adj_eas <- ggplot(eas_phenos, aes_string(x=paste0(bm, "_adj"))) +
+  #   geom_histogram()
+  # plt_adj_sas <- ggplot(sas_phenos, aes_string(x=paste0(bm, "_adj"))) +
+  #   geom_histogram()
+  # print(plot_grid(plt_adj_eur, plt_adj_afr, plt_adj_eas, plt_adj_sas, 
+  #                 nrow = 2, labels = c("EUR", "AFR", "EAS", "SAS"),
+  #                 label_x = 0.75, label_y = 0.95, label_fontface = "plain"))
+  anc_hist <- ggplot(merged_phenos, aes_string(x=paste0(bm, "_adj"))) +
+    geom_histogram() +
+    labs(x = biomarkers_short[match(bm, biomarkers)],
+         y = "Sample size") + 
+    facet_wrap(~ancestry, scales = "free_y") 
+  print(anc_hist)
+}
+```
+
+
+### Test the 5 SD outlier removal threshold
+
+```{r outlier-threshold}
+SD_vec <- 3:7
+
+# Test ALT
+alt_thresh_vec <- with(eur_phenos, mean(alt, na.rm=T) + SD_vec * sd(alt, na.rm=T))
+alt_thresh_tbl <- tibble(`Threshold (# SDs)` = SD_vec, 
+                     `# samples removed` = NA)
+alt_thresh_plt <- eur_phenos %>%
+  ggplot(aes(x=alt)) +
+  geom_histogram()
+for (i in 1:5) {
+  color <- if (i == 3) "darkred" else "black"
+  alt_thresh_plt <- alt_thresh_plt + 
+    geom_vline(xintercept=alt_thresh_vec[i], color=color)
+  alt_thresh_tbl[alt_thresh_tbl$`Threshold (# SDs)` == SD_vec[i], 2] <- sum(
+    with(eur_phenos, findInterval(
+      alt, mean(alt, na.rm=T) + c(-1, 1) * SD_vec[i] * sd(alt, na.rm=T)) != 1),
+    na.rm=T
+  )
+}
+alt_thresh_plt
+kable(alt_thresh_tbl) %>%
+  kable_styling(full_width=F)
+
+# Test TG
+tg_thresh_vec <- with(eur_phenos, mean(tg, na.rm=T) + SD_vec * sd(tg, na.rm=T))
+tg_thresh_tbl <- tibble(`Threshold (# SDs)` = SD_vec, 
+                     `# samples removed` = NA)
+tg_thresh_plt <- eur_phenos %>%
+  ggplot(aes(x=tg)) +
+  geom_histogram()
+for (i in 1:5) {
+  color <- if (i == 3) "darkred" else "black"
+  tg_thresh_plt <- tg_thresh_plt + 
+    geom_vline(xintercept=tg_thresh_vec[i], color=color)
+  tg_thresh_tbl[tg_thresh_tbl$`Threshold (# SDs)` == SD_vec[i], 2] <- sum(
+    with(eur_phenos, findInterval(
+      tg, mean(tg, na.rm=T) + c(-1, 1) * SD_vec[i] * sd(tg, na.rm=T)) != 1),
+    na.rm=T
+  )
+}
+tg_thresh_plt
+kable(tg_thresh_tbl) %>%
+  kable_styling(full_width=F)
+```
+

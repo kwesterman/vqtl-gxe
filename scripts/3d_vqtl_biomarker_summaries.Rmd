@@ -1,0 +1,427 @@
+---
+output: html_document
+title: "Initial vQTL meta-analysis results for all biomarkers"
+---
+
+Variance-QTL analysis was conducted for a series of metabolic traits in a four genetic ancestry groups from the UK Biobank (EUR, N~350k; AFR, N~6k; EAS, N~2k; SAS, N~7k). Biomarker phenotypes were pre-adjusted for age and 10 genetic PCs, along with sex-stratified standardization (see phenotype doc for details). UKB imputed genotype dosages (v3) were converted to hardcalls (if within 0.1 of 0/1/2, or set to missing) using PLINK2. vQTL analysis was conducted using the OSCA package (https://cnsgenomics.com/software/osca/), using Levene's test for median (essentially a one-way ANOVA for absolute deviations from the median within each genotype group). For comparison purposes, an accompanying mean-effect (standard) GWAS was conducted in PLINK2 using the same genotypes and adjusted phenotypes.
+
+The primary results presented here are from meta-analysis of vQTL effects across ancestries.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
+                      fig.path="../output/3d_vqtl_biomarker_summaries/",
+                      cache.path="../cache/3d_vqtl_biomarker_summaries/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer", "GenomicRanges"), 
+  library, character.only=T))
+```
+
+```{r biomarkers}
+biomarkers <- c(
+  "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
+  "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
+  "bilirubin_tot", "tg", "urea"
+)
+biomarkers_pretty <- c(
+  "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
+  "CysC", "Bilirubin-Dir", "GGT", "RG", "HbA1c", "HDL-C", "LDL-C", "LipA",
+  "Bilirubin-Tot", "TG", "Urea"
+)
+
+nonCM_biomarkers <- c("Ca", "igf1", "oestradiol", "phos", "protein_tot", 
+                      "rheum_factor", "shbg", "tes", "urate", "vitD")
+
+all_biomarkers <- c(biomarkers, nonCM_biomarkers)
+```
+
+```{r load-data}
+# No INFO filter needed here due to prior INFO filtering in postprocessing script
+
+vqtl_list <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+  fread(paste0("../data/processed/vqtl_ss/metal/", bm, "_MA_1.tbl_nom"),
+        stringsAsFactors=F, data.table=F) %>%
+    select(SNP, P, Dir, ISq, HetP) %>%
+    separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+})
+names(vqtl_list) <- all_biomarkers
+
+me_list <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+  fread(paste0("../data/processed/main_effect_ss/metal/", bm, "_MA_1.tbl_nom"),
+        stringsAsFactors=F, data.table=F) %>%
+    select(SNP, P, Dir, ISq, HetP) %>%
+    separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+})
+names(me_list) <- all_biomarkers
+```
+
+```{r prep-funcs}
+# make_manhattan <- function(data, pval_col, chr_col="CHR", pos_col="POS", main="") {
+#   # Make a Manhattan plot
+#   
+#   data <- dplyr::rename(data, CHR=chr_col, POS=pos_col)
+#   data <- filter(data, data[[pval_col]] > 0)  # In case extremely low p-values are stored as zero
+#   nlps <- -log10(data[[pval_col]])
+#   
+#   # Trim points in crowded regions (credit to RaMWAS package for code snippet)
+#   yfac = as.integer(nlps * 100) + 1L
+#   yorder = sort.list(yfac)
+#   levels(yfac) = as.character(seq_len(max(yfac)))
+#   class(yfac) = "factor"
+#   ygroup = split(seq_along(yfac), yfac)
+#   for (i in seq_along(ygroup)) {
+#     if (length(ygroup[[i]]) > 300) {
+#       ygroup[[i]] = sample(ygroup[[i]], size=150, replace=FALSE)
+#     }
+#   }
+#   keep = unlist(ygroup, use.names=FALSE)
+#   
+#   CMplot::CMplot(
+#     tibble(data$SNP, data$CHR, data$POS, data[[pval_col]])[keep, ],
+#     type="p",
+#     cex.lab=1,
+#     plot.type="m",
+#     cex=0.35,
+#     threshold=5e-8,
+#     threshold.col="gray",
+#     amplify=F,
+#     file.output=F,
+#     main=main,
+#     verbose=F
+#   )
+# }
+
+make_manhattan <- function(data, pval_col, chr_col="CHR", pos_col="POS", 
+                           ylims=NULL, main="") {
+
+  mh_data <- data %>%
+    dplyr::rename(CHR=chr_col, POS=pos_col, P=pval_col) %>%
+    filter(!is.na(P)) %>%
+    mutate(P = ifelse(P == 0, min(1e-300, min(P[P != 0], na.rm=T)), P),  # Remove P = 0
+           nlp = -log10(P))
+  
+  # Trim points in crowded regions (credit to RaMWAS package for code snippet)
+  yfac = as.integer(mh_data$nlp * 100) + 1L
+  yorder = sort.list(yfac)
+  yfac <- factor(yfac, levels=as.character(seq_len(max(yfac))))
+  ygroup <- split(seq_along(yfac), yfac)
+  for (i in seq_along(ygroup)) {
+    if (length(ygroup[[i]]) > 300) {
+      ygroup[[i]] <- sample(ygroup[[i]], size=300, replace=F)
+    }
+  }
+  keep <- unlist(ygroup, use.names=FALSE)
+  
+  mh_data <- mh_data %>%
+    select(SNP, CHR, POS, nlp) %>%
+    dplyr::slice(keep) %>%
+    mutate(POS = as.numeric(as.character(POS)),
+           CHR = factor(CHR, levels=1:22)) %>%
+    arrange(CHR, POS) %>%
+    mutate(pos_idx = seq(1, nrow(.)))
+  
+  chr_lengths <- sapply(1:22, function(chr) with(mh_data, max(POS[CHR == chr])))
+  chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+  
+  mh_data <- mh_data %>%
+    mutate(x_coord = chr_start_pos[CHR] + POS,
+           color = CHR,
+    ) %>%
+    arrange(as.integer(color), nlp) %>%
+    distinct(SNP, .keep_all=T)
+  
+  lims <- mh_data %>%
+    group_by(CHR) %>%
+    summarise(avg_coord = (min(x_coord) + max(x_coord)) / 2)
+  
+  newcols <- setNames(
+    rep(x=c("#AAAAAA", "#8A8A8A"), length.out=22),  # Gray/dark gray for alternating chromosomes
+    levels(factor(lims$CHR))
+  )
+  
+  p1 <- ggplot() +
+    geom_point(data=mh_data, 
+               aes(x=x_coord, y=nlp, color=factor(color)), 
+               size=0.75, alpha=1) +
+    geom_hline(yintercept=-log10(5e-8), linetype="dashed", color="black") + 
+    scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                       labels=c(1:16, 18, 20, 20, 22), 
+                       expand=c(0,0)) +
+    scale_y_continuous(name=expression(-log[10](italic(p)))) +
+    scale_colour_manual(values=newcols, guide=F) +
+    scale_fill_manual(name="Color", values=newcols) +
+    labs(title=main) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_text(vjust = -1.5),
+          panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank())
+  if (!is.null(ylims)) p1 <- p1 + coord_cartesian(ylim=ylims)
+  
+  p1
+}
+
+make_manhattan_with_highlights <- function(data, pval_col="P", 
+                                           chr_col="CHR", pos_col="POS",
+                                           ylims=NULL, main="",
+                                           highlight_col=NULL, 
+                                           highlight_colors=NULL,
+                                           highlight_labs=NULL) {
+  
+  data <- dplyr::rename(data, CHR=chr_col, POS=pos_col)
+  data <- filter(data, data[[pval_col]] > 0)
+  nlps <- -log10(data[[pval_col]])
+  
+  # Trim points in crowded regions (credit to RaMWAS package for code snippet)
+  yfac = as.integer(nlps * 100) + 1L
+  yorder = sort.list(yfac)
+  levels(yfac) = as.character(seq_len(max(yfac)))
+  class(yfac) = "factor"
+  ygroup = split(seq_along(yfac), yfac)
+  for (i in seq_along(ygroup)) {
+    if (length(ygroup[[i]]) > 300) {
+      ygroup[[i]] = sample(ygroup[[i]], size=300, replace=FALSE)
+    }
+  }
+  keep = unlist(ygroup, use.names=FALSE)
+
+  data$highlight <- if (!is.null(highlight_col)) data[[highlight_col]] else 0
+  
+  d <- cbind(select(data, SNP, CHR, POS, highlight), pvalue=nlps)[keep, ]
+  d$POS <- as.numeric(as.character(d$POS))
+  d$CHR <- factor(d$CHR, levels = 1:22)
+  d <- d[order(d$CHR, d$POS), ]
+  d$pos_index <- seq.int(nrow(d))
+  chr_lengths <- sapply(1:22, function(chr) max(d[d$CHR == chr, "POS"], na.rm=T))
+  chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+  d$x_coord <- chr_start_pos[d$CHR] + d$POS
+  d_sub <- d[, c("SNP", "CHR", "POS", "highlight", "pvalue", "pos_index", "x_coord")]
+  maxRows <- by(d_sub, d_sub$CHR, function(x) x[which.max(x$x_coord),])
+  minRows <- by(d_sub, d_sub$CHR, function(x) x[which.min(x$x_coord),])
+  milimits <- do.call(rbind, minRows)
+  malimits <- do.call(rbind, maxRows)
+  lims <- merge(milimits, malimits, by="CHR")
+  names(lims) <- c("Color", 
+                   "snpx", "posx", "expx", "px", "posidxx", "xcoordmin",
+                   "snpy", "posy", "expy", "py", "posidxy", "xcoordmax")
+  lims$av <- (lims$xcoordmin + lims$xcoordmax)/2
+  lims <- lims[order(lims$Color),]
+  
+  d$Color <- ifelse(d$highlight %in% names(highlight_colors), 
+                    d$highlight, d$CHR)
+  d <- arrange(d, as.integer(Color), desc(pvalue)) %>%
+    distinct(SNP, .keep_all=T)
+  newcols <- setNames(
+    c(rep(x=c("#AAAAAA", "#8A8A8A"), length.out=22), highlight_colors),  # Gray/dark gray for alternating chromosomes
+    c(levels(factor(lims$Color)), names(highlight_colors))
+  )
+  
+  p1 <- ggplot() +
+    geom_point(data=d, 
+               aes(x=x_coord, y=pvalue, color=factor(Color)), 
+               size=0.75, alpha=1) +
+    geom_hline(yintercept=-log10(5e-8), linetype="dashed", color="black") + 
+    scale_x_continuous(breaks=lims$av[c(1:16, 18, 20, 20, 22)], 
+                       labels=lims$Color[c(1:16, 18, 20, 20, 22)], 
+                       expand=c(0,0)) +
+    scale_y_continuous(name=expression(-log[10](italic(p)))) +
+    scale_colour_manual(name="Color", values=newcols,
+                        breaks=names(highlight_colors),
+                        labels=highlight_labs) +
+    scale_fill_manual(name="Color", values=newcols) +
+    labs(title=main) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_text(vjust = -1.5),
+          panel.grid.minor=element_blank(),
+          panel.grid.major.x=element_blank())
+  if (!is.null(ylim)) p1 <- p1 + coord_cartesian(ylim=ylims)
+  p1
+}
+```
+
+```{r qq-plots, eval=F}
+eur_vqtl_QQs <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  vqtl_qq_path <- paste0("../data/processed/vqtl_ss/qq_plots/", bm, "_EUR_QQ.pdf")
+  grid::rasterGrob(png::readPNG(vqtl_qq_path, interpolate=T))
+})
+
+eur_ME_QQs <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  ME_qq_path <- paste0("../data/processed/main_effect_ss/qq_plots/", bm, "_EUR_QQ.pdf")
+  grid::rasterGrob(png::readPNG(ME_qq_path, interpolate=T))
+})
+```
+
+```{r manhattan-plots}
+vqtl_mh_plts <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+  make_manhattan(vqtl_list[[bm]], "P")
+})
+
+me_mh_plts <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+  make_manhattan(me_list[[bm]], "P")
+})
+```
+
+```{r pruning}
+prune_chromosome <- function(chr_df, pval_col, locus_width) {
+  # Prune variants given a chromosome-specific summary statistic data frame
+  df <- arrange(chr_df, !!sym(pval_col))  # Sort by ascending p-value
+  pruned_df <- tibble()
+  while(nrow(df) > 0) {
+    pruned_df <- bind_rows(pruned_df, df[1, ])  # Add lowest p-value to pruned dataset
+    df <- filter(df, (POS < df$POS[1] - locus_width / 2) |  # Remove rest of variants in that distance-based locus
+                   (POS > df$POS[1] + locus_width / 2))
+  }
+  pruned_df
+}
+
+prune_variants <- function(ss_df, pval_col, thresh=5e-8, locus_width=500000) {
+  # Prune variants across all chromosomes using a simple distance-based approach
+  if (min(ss_df[[pval_col]], na.rm=T) > thresh) return(tibble())
+  ss_df %>%
+    filter(!!sym(pval_col) < thresh) %>%
+    mutate(POS = as.numeric(POS)) %>%
+    nest(data=-CHR) %>%
+    mutate(pruned_ss=map(data, prune_chromosome, pval_col, locus_width)) %>%
+    unnest(pruned_ss) %>%
+    select(-data) %>%
+    dplyr::rename(index_var=SNP)
+}
+
+pruned_vqtl_ss <- lapply(vqtl_list, prune_variants, "P")
+pruned_me_ss <- lapply(me_list, prune_variants, "P")
+# pruned_me_ss <- lapply(1:length(me_list), function(a) {
+#   print(all_biomarkers[a])
+#   prune_variants(me_list[[a]], "P")
+# })
+```
+
+```{r vqtl-me-overlaps}
+find_overlaps <- function(df, pval_col, locus_width) {
+  # df should have all (pre-pruned) summary statistics concatenated into  
+  # single data frame with a column named "source" as ID
+  df <- arrange(df, !!sym(pval_col))  # Sort by ascending p-value
+  group_df <- tibble()
+  while(nrow(df) > 0) {
+    # group_df <- bind_rows(pruned_df, df[1, ])  # Add lowest p-value to pruned dataset
+    # group_df$group_index_var <- df$index_var
+    new_group_idx <- with(df, which(
+      (CHR == CHR[1]) & 
+        (POS >= POS[1] - locus_width / 2) & 
+        (POS <= POS[1] + locus_width / 2)
+    ))
+    # print(new_group_idx)
+    new_group_df <- df[new_group_idx, ]
+    new_group_df$group_index_var <- df$index_var[1]
+    group_df <- bind_rows(group_df, new_group_df)
+    df <- df[-new_group_idx, ]
+    # df <- filter(df, CHR != CHR[1] |
+    #                (POS < df$POS[1] - locus_width / 2) |  # Remove rest of variants in that distance-based locus
+    #                (POS > df$POS[1] + locus_width / 2))
+  }
+  group_df
+}
+
+vqtl_me_overlaps <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+  vqtl_me_concat <- bind_rows(
+    list(vqtl=pruned_vqtl_ss[[bm]], me=pruned_me_ss[[bm]]),
+    .id="source"
+  )
+  vqtl_me_overlap <- find_overlaps(vqtl_me_concat, "P", 500000)
+})
+
+vqtl_me_overlap_summaries <- map_dfr(vqtl_me_overlaps, function(vmo) {
+  vmo_wide <- vmo %>% 
+    group_by(group_index_var) %>% 
+    summarise(vqtl_locus="vqtl" %in% source, 
+              me_locus="me" %in% source, 
+              variants=paste(index_var, collapse=";"))
+  with(vmo_wide, tibble(
+    vqtls = sum(vqtl_locus),
+    vqtl_only = sum(vqtl_locus & !me_locus),
+    pct_vqtl = round(sum(vqtl_locus & me_locus) / sum(me_locus) * 100, 1)
+  ))
+}, .id="bm")
+
+# vqtl_me_overlap_summaries <- map_dfr(vqtl_me_overlaps, function(vmo) {
+#   vmo_wide <- vmo %>%
+#     # dplyr::slice(1:400) %>%
+#     # select(group_index_var, source) %>%
+#     mutate(value="T") %>%
+#     pivot_wider(
+#       id_cols="group_index_var",
+#                 names_from="source", 
+#                 values_from="value")
+#   print(head(vmo_wide))
+#   tibble(
+#     vqtl_only = sum()
+#   )
+# })
+```
+
+```{r genomic-inflation}
+gc_lambdas <- c(
+  alt=1.13, alb=1.01, alp=1.09, apoA=1.08, apoB=1.05, ast=1.09, hscrp=1.18, 
+  chol=1.06, creatinine=1.04, cysC=1.08, bilirubin_dir=1.06, ggt=1.23, glu=1.03, 
+  hba1c=1.08, hdl=1.09, ldl=1.05, lipA=1.03, bilirubin_tot=1.07, tg=1.17, 
+  urea=1.06, Ca=1.01, igf1=1.04, oestradiol=1.02, phos=1.02, protein_tot=1.01, 
+  rheum_factor=1.02, shbg=1.08, tes=1.05, urate=1.07, vitD=1.12
+)
+```
+
+```{r bm-summaries, fig.asp=1.2, results="asis"}
+# for (bm in biomarkers) {
+#   qq_panel <- plot_grid(eur_vqtl_QQs[[bm]],
+#                         eur_ME_QQs[[bm]],
+#                         nrow=1, labels=c("vQTL", "Main effect"))
+#   plt <- plot_grid(eur_vqtl_mh_plts[[bm]], eur_ME_mh_plts[[bm]], qq_panel,
+#                    nrow=3)
+#   print(plt)
+#   kable(head(pruned_ss[[bm]]),
+#         caption=paste0("Index variants from analysis of ", bm))
+# }
+
+for (b in all_biomarkers) {
+  qq <- grid::rasterGrob(magick::image_read_pdf(
+    paste0("../data/processed/vqtl_ss/qq_plots/", b, "_MA_1_QQ.pdf")
+  ), interpolate=T)
+  plt <- plot_grid(vqtl_mh_plts[[b]], me_mh_plts[[b]], qq,
+                   ncol=1, rel_heights=c(2, 2, 1),
+                   labels=paste0(b, c(" - vQTL", " - Main effect")))
+  print(plt)
+  print(paste0(nrow(pruned_vqtl_ss[[b]]), " independent vQTL loci at p < 5e-8.\n"))
+  print(paste0(nrow(pruned_me_ss[[b]]), " independent main-effect loci at p < 5e-8."))
+  filter(vqtl_me_overlap_summaries, bm == b) %>%
+    mutate(lambda = gc_lambdas[b]) %>%
+    setNames(c("Biomarker", "Total # vQTLs", "# vQTLs w/out main effect",
+               "% main effects with a vQTL", "GC lambda")) %>%
+    kable() %>%
+    kable_styling() %>%
+    print()
+}
+```
+
+```{r manhattans, fig.asp=1, eval=F}
+eur_vqtl_mh_plts <- lapply(setNames(biomarkers, biomarkers_pretty), function(bm) {
+  make_manhattan_with_highlights(eur_vqtl_list[[bm]], ylim = c(2, NA))
+})
+afr_vqtl_mh_plts <- lapply(setNames(biomarkers, biomarkers_pretty), function(bm) {
+  make_manhattan_with_highlights(afr_vqtl_list[[bm]], ylim = c(2, NA))
+})
+eur_ME_mh_plts <- lapply(setNames(biomarkers, biomarkers_pretty), function(bm) {
+  make_manhattan_with_highlights(eur_ME_list[[bm]], ylim = c(2, NA))
+})
+afr_ME_mh_plts <- lapply(setNames(biomarkers, biomarkers_pretty), function(bm) {
+  make_manhattan_with_highlights(afr_ME_list[[bm]], ylim = c(2, NA))
+})
+
+lapply(biomarkers_pretty, function(bm) {
+  plot_grid(eur_vqtl_mh_plts[[bm]], eur_ME_mh_plts[[bm]], nrow = 2,
+            labels = paste0(bm, " - ", c("vQTL", "Main effect")),
+            label_fontface = "plain")
+})
+```
+```{r all-qq, fig.asp=1.2, cache=2, eval=F}
+par(mar=c(5, 5, 4, 2), mfrow=c(3, 3))
+for (bm in biomarkers) {
+  make_qq(eur_vqtl_list[[bm]], "P", main=bm)
+}
+```

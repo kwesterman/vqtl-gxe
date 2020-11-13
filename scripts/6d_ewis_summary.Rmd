@@ -1,0 +1,402 @@
+---
+output: html_document
+title: "Exposome-wide interaction study results for vQTL variants and metabolic biomarkers"
+---
+
+Based on the initial vQTL analysis in 20 metabolic biomarkers, approximately 1000 genome-wide significant index variants (ancestry-specific or meta-analyzed) were taken forward into the exposome-wide association testing phase. These were tested for interaction with each of ~2000 PHESANT-derived phenotypes affecting each of the 20 biomarkers. Interaction testing was performed using GEM in each ancestry separately, then ancestry-specific results were combined using METAL. The meta-analysis results are summarized here.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
+                      fig.path="../output/6d_vqtl_summary/",
+                      cache.path="../cache/6d_vqtl_summary/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer", "GenomicRanges"), 
+  library, character.only=T))
+theme_set(theme_bw())
+```
+
+```{r biomarkers}
+biomarkers <- c(
+  "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
+  "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
+  "bilirubin_tot", "tg", "urea"
+)
+biomarkers_pretty <- c(
+  "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
+  "CysC", "Bilirubin-Dir", "GGT", "RG", "HbA1c", "HDL-C", "LDL-C", "LipA",
+  "Bilirubin-Tot", "TG", "Urea"
+)
+
+vqtl_bonferroni <- 5e-8 / 16.2
+```
+
+```{r load-data, cache=2}
+exposures <- scan("../data/processed/ewis/ewis_phenotype_list.txt", 
+                  what=character())
+
+ewis_df_raw <- fread("../data/processed/ewis/ewis_ma_results_nom.csv",
+                     data.table=F, stringsAsFactors=F)
+
+ewis_genotypes_pvar <- read_tsv("../data/processed/ewis/ewis_genotypes.pvar") %>%
+  select(CHR=`#CHROM`, POS, ID)
+vqtl_df <- read_csv("../data/processed/ewis/ewis_variant_data.csv") %>%
+  left_join(ewis_genotypes_pvar, by=c("CHR", "POS")) %>%
+  select(SNP=ID, bm, ancestry, P_vqtl=P)
+```
+
+```{r variable-info}
+data_codings <- read_csv("../opt/PHESANT/variable-info/data-coding-ordinal-info-nov2019-update.txt")
+med_coding <- read_tsv("../data/raw/ukb_medication_coding.tsv")
+illness_coding <- read_tsv("../data/raw/ukb_illness_coding.tsv")
+
+variable_info <- read_tsv("../data/processed/phesant_phenos/ewis_variable_info.tsv") %>%
+  select(FieldID, Category, coding=DATA_CODING, Path, Field) %>%
+  separate(Path, into=paste0("Category_Level_", 1:6), sep=" > ", remove=F) %>%
+  mutate(exp_group = case_when(
+    Category_Level_2 %in% c(
+      "Diet by 24-hour recall", "Mental health", "Physical measures", 
+      "Assay results",  "Digestive health"
+    ) ~ Category_Level_2,
+    (
+      Category_Level_3 %in% c("Operations", "Sex-specific factors")
+    ) ~ "Miscellaneous",
+    Category_Level_2 %in% c("Verbal interview", "Touchscreen") ~ Category_Level_3,
+    Category_Level_2 == "Physical activity measurement" ~ "Lifestyle and environment",
+    (
+      Category_Level_3 == "Sociodemographics" |
+        Field == "Townsend deprivation index at recruitment" |
+        Field == "UK Biobank assessment centre"
+    ) ~ "Sociodemographics",
+    TRUE ~ "Miscellaneous"
+  )) %>%
+  mutate(FieldID = as.character(FieldID)) %>%
+  filter(!(exp_group %in% c("Assay results")))
+```
+
+## Considerations
+
+```{r n-eff}
+eur_phenos <- fread("../data/processed/vqtl_phenos_EUR.csv",
+                    data.table=F, stringsAsFactors=F)
+
+bm_pca <- eur_phenos %>%
+  select(paste0(biomarkers, "_adj")) %>%
+  mutate_all(~ifelse(is.na(.), mean(., na.rm=T), .)) %>%
+  prcomp()
+n_eff_bm <- sum(bm_pca$sdev) ** 2 / sum(bm_pca$sdev ** 2)
+```
+
+Two important points to keep in mind when considering these results:
+
+* Due to correlations between biomarkers and between exposures, it may be that the number of "effective" tests is substantially lower than the number of actual tests. We can estimate this number using the eigenvalues from PCA on the phenotype or exposure matrix as the square of summed eigenvalues divided by the sum of squared eigenvalues (Bretherton et al. 1999). This gives the following number of effective variables:
+    - Biomarkers: 16.2 (of 20)
+    - Exposures: 1870 (of 2140)
+    * The naive multiple testing threshold would be 0.05 / 20 / 2140 = 1.2e-6. Using the number of effective biomarkers and exposures instead, it would change to 0.05 / 16.2 / 1870 = 1.7e-6.
+* Jim Gauderman's group has shown that the use of variance QTLs as a variant screening tool prior to interaction testing is biased whenever the environment-phenotype relationship is non-zero (Zhang et al. 2016 Genet. Epidemiol.). This should be taken into consideration in how we discuss our findings.
+
+## High-level summaries
+
+```{r process-primary-ewis}
+# Identify significant vQTL-biomarker pairs 
+primary_vqtl_df <- vqtl_df %>%
+  filter(ancestry == "MA",
+         P_vqtl < vqtl_bonferroni) %>%
+  select(-ancestry)
+
+ewis_bonferroni <- 0.05 / nrow(primary_vqtl_df) / 2140
+
+# Subset to only the relevant variant-trait combos from meta-analysis
+ewis_df <- ewis_df_raw %>%
+  inner_join(primary_vqtl_df, by=c("SNP", "bm")) %>%  # Subset to significant vQTL pairs
+  separate(exposure, into=c("FieldID", "level"), remove=F) %>%
+  mutate(level = as.integer(recode(level, age="21022", sex="31"))) %>%
+  inner_join(variable_info, by="FieldID") %>%  # Merge in variable info
+  mutate(Field = case_when(
+    FieldID == 20002 ~ illness_coding$meaning[match(level, illness_coding$coding)],
+    FieldID == 20003 ~ med_coding$meaning[match(level, med_coding$coding)],
+    TRUE ~ Field
+  ))
+```
+
+The following plot contains all p-values with p < 0.05, across all exposures and vQTL-biomarker pairs. The dotted line represents a Bonferroni-corrected p-value of 0.05 / (`r nrow(primary_vqtl_df)` variant-biomarker combinations) / (2140 exposures) = 4.04e-8. `r sum(ewis_df$P < ewis_bonferroni)` total interactions were detected.
+
+```{r ewis-manhattan}
+ewis_mh_df <- ewis_df %>%
+  mutate(grp = exp_group,
+         P = pmax(P, 1e-300, na.rm=T)) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+  # filter((P < 0.01) | ((idx * nrow(.)) %% 100 == 0))
+ewis_mh_lims <- ewis_mh_df %>%
+  group_by(grp) %>%
+  summarise(x = (min(idx) + max(idx)) / 2)
+ewis_mh_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(ewis_mh_lims))
+ewis_mh_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_hline(yintercept=-log10(ewis_bonferroni), linetype="dashed", color="gray") +
+  scale_x_continuous(breaks=ewis_mh_lims$x,
+                     labels=ewis_mh_lims$grp) + 
+  scale_y_log10() +
+  scale_color_manual(values=ewis_mh_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+```{r ewis-summary-by-biomarker}
+ewis_bm_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(bm) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+# ewis_bm_summary %>%
+#   arrange(desc(n)) %>%
+#   mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+#   setNames(c("Biomarker", "# hits")) %>%
+#   kable(caption="Summary of significant GEI hits at vQTL-biomarker pairs across biomarkers") %>%
+#   kable_styling(full_width=F)
+
+ewis_exp_group_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+ewis_bm_exp_group_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(bm, exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  mutate(bm = factor(bm, levels=ewis_bm_summary$bm,
+                     labels=biomarkers_pretty[match(ewis_bm_summary$bm, biomarkers)]),
+         exp_group = factor(exp_group, levels=rev(ewis_exp_group_summary$exp_group)))
+
+ewis_bm_exp_summary %>%
+  ggplot(aes(x=bm, y=n, fill=exp_group)) +
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette="Paired",
+                    name="Exposure group") +
+  labs(x="", y="", 
+       title="Summary of significant GEI hits across biomarkers and exposures") +
+  theme(axis.text.x = element_text(angle=30, hjust=1))
+```
+
+```{r ewis-summary-by-exposure, eval=F}
+ewis_exp_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(Field, exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+ewis_exp_summary %>%
+  arrange(desc(n)) %>%
+  setNames(c("Exposure", "# hits")) %>%
+  kable(caption="Summary of significant GEI hits at vQTL-biomarker pairs across exposures") %>%
+  kable_styling(full_width=F)
+```
+
+## Zoom in on ALT
+
+The following plot includes all variant-exposures pairs with adjusted ALT as the outcome.
+
+```{r ewis-manhattan-alt}
+ewis_mh_alt_df <- ewis_df %>%
+  filter(bm == "alt") %>%
+  mutate(grp = exp_group) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+ewis_mh_alt_lims <- ewis_mh_alt_df %>%
+  group_by(grp) %>%
+  summarise(x = mean(idx))
+ewis_mh_alt_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(ewis_mh_alt_lims))
+ewis_mh_alt_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_text(data=filter(ewis_mh_alt_df, ifelse(grp == "Physical measures", P < 1e-30, P < 1e-10)), 
+            aes(label=Field), nudge_x=-0.05, nudge_y=0.03, 
+            color="black", size=2, angle=25) +
+  scale_x_continuous(breaks=ewis_mh_alt_lims$x,
+                     labels=ewis_mh_alt_lims$grp) + 
+  scale_y_log10() +
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  scale_color_manual(values=ewis_mh_alt_colors, guide=F) + 
+  theme(axis.text.x=element_text(angle=40, hjust=0.95),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+### What about our *ADH1B* example?
+
+The vQTL analysis showed a strong vQTL effect of rs1229984 on ALT. This is consistent with a GEI related to alcohol intake, but doesn't prove anything about alcohol's involvement. So, what do we see when subsetting the ALT EWIS results for rs1229984?
+
+The following plot includes all exposures interacting with rs1229984 with adjusted ALT as the outcome.
+
+```{r alt-adh1b}
+ewis_df %>%
+  filter(bm == "alt",
+         SNP == "rs1229984") %>%
+  select(Field, P, Dir) %>%
+  arrange(P) %>%
+  mutate(P = as.character(signif(P, 2))) %>%
+  dplyr::slice(1:10) %>%
+  kable(caption="Top EWIS results for ALT & rs1229984") %>%
+  kable_styling(full_width=F)
+
+ewis_mh_alt_adh1b_df <- ewis_df %>%
+  filter(bm == "alt", SNP == "rs1229984") %>%
+  mutate(grp = exp_group) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+ewis_mh_alt_adh1b_lims <- ewis_mh_alt_adh1b_df %>%
+  group_by(grp) %>%
+  summarise(x = mean(idx))
+ewis_mh_alt_adh1b_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(ewis_mh_alt_adh1b_lims))
+ewis_mh_alt_adh1b_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_text(data=filter(ewis_mh_alt_adh1b_df, P < 1e-4), 
+            aes(label=Field), nudge_x=-0.05, nudge_y=0.05, 
+            color="black", size=2, angle=15) +
+  scale_x_continuous(breaks=ewis_mh_alt_adh1b_lims$x,
+                     labels=ewis_mh_alt_adh1b_lims$grp) + 
+  scale_color_manual(values=ewis_mh_alt_adh1b_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=40, hjust=0.95),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+## Ancestry-specific results
+
+### Ancestry breakdown of meta-analysis hits
+
+```{r load-all-ancestry-specific}
+ewis_anc_all_df <- fread(paste("../data/processed/ewis/ewis_anc_results_nom.csv"),
+                         data.table=F, stringsAsFactors=F)
+```
+
+```{r MA-ancestry-specific}
+ewis_MA_anc_df <- left_join(
+  filter(ewis_df, P < ewis_bonferroni),  # Significant hits from meta-analysis
+  filter(ewis_anc_all_df, P < 0.05),  # Nominal ancestry-specific hits
+  by=c("SNP", "bm", "exposure"), suffix=c("_MA", "_AS")
+)
+ewis_MA_anc_df %>%
+  mutate(allele_flip = case_when(  # Needed because METAL sometimes flips REF/ALT alleles
+    toupper(Allele1_MA) == Allele1_AS & toupper(Allele1_MA) == Allele1_AS ~ FALSE,
+    toupper(Allele1_MA) == Allele2_AS & toupper(Allele2_MA) == Allele1_AS ~ TRUE,
+    TRUE ~ as.logical(NA)
+  )) %>%
+  filter(sign(Beta_MA) == ifelse(allele_flip, -sign(Beta_AS), sign(Beta_AS))) %>%
+  group_by(bm, exposure, SNP) %>%
+  summarise(
+    n = n(),
+    category = case_when(
+      all(is.na(anc)) ~ "None with p < 0.05",
+      n() > 1 ~ "Multi-ancestry signal",
+      all(anc == "EUR") ~ "EUR only",
+      all(anc == "AFR") ~ "AFR only",
+      all(anc == "EAS") ~ "EAS only",
+      all(anc == "SAS") ~ "SAS only",
+      TRUE ~ "Non-EUR",
+    )
+  ) %>%
+  # summarise(category=paste(sort(anc), collapse="; ")) %>%  # Maybe a Venn diagram with this info at a later time
+  group_by(category) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  setNames(c("Category", "# hits")) %>%
+  kable(caption="Ancestry-specific nominal signals (p < 0.05) underlying meta-analysis hits") %>%
+  kable_styling(full_width=F)
+```
+
+### Additional ancestry-specific hits
+
+```{r load-data-ancestry}
+ancestries <- c("EUR", "AFR", "EAS", "SAS")
+
+ancestry_vqtl_df <- vqtl_df %>%
+  filter(ancestry != "MA",
+         P_vqtl < vqtl_bonferroni) %>%
+  dplyr::rename(vqtl_ancestry = ancestry)
+
+anc_bonferroni <- 0.05 / nrow(ancestry_vqtl_df) / 2140
+
+ewis_anc_df <- fread(paste("../data/processed/ewis/ewis_anc_results_nom.csv"),
+                     data.table=F, stringsAsFactors=F) %>%
+  inner_join(ancestry_vqtl_df, by=c("SNP", "bm"))
+```
+
+```{r nonMA-ancestry-specific}
+ewis_nonMA_anc_df <- anti_join(  # Remove all hits from meta-analysis
+  filter(ewis_anc_df, P < anc_bonferroni),
+  filter(ewis_df, P < ewis_bonferroni),
+  by=c("SNP", "bm", "exposure")
+)
+
+ewis_nonMA_anc_df %>%
+  group_by(bm, exposure, SNP) %>%
+  summarise(category = case_when(
+    all(is.na(anc)) ~ "None with p < 0.05",
+    n() > 1 ~ "Multi-ancestry signal",
+    all(anc == "EUR") ~ "EUR only",
+    all(anc == "AFR") ~ "AFR only",
+    all(anc == "EAS") ~ "EAS only",
+    all(anc == "SAS") ~ "SAS only",
+    TRUE ~ "Non-EUR"
+  )) %>%
+  group_by(bm, category) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  pivot_wider(names_from="category", values_from="n", values_fill=0) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  select(Biomarker=bm, "Multi-ancestry signal", everything()) %>%
+  kable(caption="Ancestry-specific hits not found in the meta-analysis") %>%
+  kable_styling(full_width=F)
+```
+
+```{r ancestry-specific-ewis, cache=2, eval=F}
+## USE THIS IF WANT MORE SPECIFICS FOR ANCESTRY-SPECIFIC SIGNAL
+anc_ewis_df <- ewis_anc_df %>%
+  inner_join(anc_vqtl_df, by=c("SNP", "bm")) %>%  # Subset to significant vQTL pairs
+  separate(exposure, into=c("FieldID", "level"), remove=F) %>%
+  mutate(level = as.integer(recode(level, age="21022", sex="31"))) %>%
+  inner_join(variable_info, by="FieldID") %>%  # Merge in variable info
+  mutate(Field = case_when(
+    FieldID == 20002 ~ illness_coding$meaning[match(level, illness_coding$coding)],
+    FieldID == 20003 ~ med_coding$meaning[match(level, med_coding$coding)],
+    TRUE ~ Field
+  ))
+```
+
+```{r ancestry-ewis-manhattan, eval=F}
+anc_ewis_mh_df <- anc_ewis_df %>%
+  mutate(grp = exp_group,
+         P = pmax(P, 1e-300, na.rm=T)) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+  # filter((P < 0.01) | ((idx * nrow(.)) %% 100 == 0))
+anc_ewis_mh_lims <- anc_ewis_mh_df %>%
+  group_by(grp) %>%
+  summarise(x = (min(idx) + max(idx)) / 2)
+anc_ewis_mh_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(anc_ewis_mh_lims))
+anc_ewis_mh_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=ancestry)) +
+  geom_point(size=0.75) +
+  geom_hline(yintercept=-log10(anc_ewis_bonferroni), linetype="dashed", color="gray") +
+  scale_x_continuous(breaks=anc_ewis_mh_lims$x,
+                     labels=anc_ewis_mh_lims$grp) + 
+  scale_y_log10() +
+  # scale_color_manual(values=anc_ewis_mh_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+## To-do
+
+* Are vQTLs indeed enriched for GEI signal?
+    - This would be a confirmation of previous findings
+    - How to test this independent of the influence of the findings from Zhang et al. (non-zero correlation between vQTL and GEI tests when the exposure and outcome are correlated)?
+* Is a vQTL identified for one biomarker more likely to support GEI signals in *other* biomarkers? This would support the idea that there are loci that are globally more likely to participate in interactions, at least with respect to metabolic traits.
