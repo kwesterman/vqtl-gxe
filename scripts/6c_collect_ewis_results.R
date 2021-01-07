@@ -40,7 +40,7 @@ ewis_df %>%
 ## ANCESTRY-SPECIFIC
 
 read_gxe_anc <- function(bm, e, anc) {
-  fn <- paste0("../data/processed/ewis/", bm, "/", bm, "_", e, "_", anc)
+  fn <- paste0("../data/processed/ewis/", bm, "/", e, "_", anc)
   df <- tryCatch({
     fread(fn, data.table=F, stringsAsFactors=F, na.strings=c("NA", "nan", "nane-nan", "")) %>%
       select(SNP=ID, Allele1=Non_Effect_Allele, Allele2=Effect_Allele, 

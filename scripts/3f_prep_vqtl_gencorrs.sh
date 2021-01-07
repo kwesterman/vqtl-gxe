@@ -1,13 +1,9 @@
 #!/bin/sh
 
 
-##$ -l h_vmem=25G
-##$ -l h_rt=28:00:00
-##$ -j y
-#
-##$ -pe smp 4
-##$ -binding linear:4
-##$ -R y
+#$ -l h_vmem=15G
+#$ -l h_rt=16:00:00
+#$ -j y
 
 bm=$1
 ancestry=EUR
@@ -20,6 +16,7 @@ use .r-3.6.0
 
 cd ~/kw/ukbb-vqtl/scripts
 vqtl_dir=../data/processed/vqtl_ss
+me_dir=../data/processed/main_effect_ss
 source activate ldsc
 
 
@@ -48,9 +45,16 @@ R --vanilla <<EOF
     inner_join(var_annot, by=c("CHR", "POS")) %>%
     select(rsID, A1, A2, freq, NMISS, BETA=beta, SE=se, P) %>%
     write_tsv("${vqtl_dir}/ldsc/${bm}_${ancestry}_hm3")
+  sumstats <- data.table::fread("${me_dir}/${bm}_${ancestry}_ME_merged", data.table=F, stringsAsFactors=F) %>%
+    setNames(c("CHR", "POS", "ID", "A2", "ALT", "A1", "TEST", "N", "BETA", "SE", "T_STAT", "P")) %>%
+    mutate(CHR = as.character(CHR),
+	   P = as.numeric(P)) %>%
+    inner_join(var_annot, by=c("CHR", "POS")) %>%
+    select(rsID, A1, A2, N, BETA, SE, P) %>%
+    write_tsv("${me_dir}/ldsc/${bm}_${ancestry}_hm3")
 EOF
 
-# Munge sumstats for biomarker 1 if needed
+# Munge sumstats for vQTL
 ../opt/ldsc/munge_sumstats.py \
 	--sumstats ${vqtl_dir}/ldsc/${bm}_${ancestry}_hm3 \
 	--merge-alleles ../data/raw/ldsc/w_hm3.snplist \
@@ -62,3 +66,15 @@ EOF
 	--frq freq \
 	--signed-sumstats BETA,0 \
 	--out ${vqtl_dir}/ldsc/${bm}_${ancestry}_ldsc
+
+# Munge sumstats for main effect
+../opt/ldsc/munge_sumstats.py \
+	--sumstats ${me_dir}/ldsc/${bm}_${ancestry}_hm3 \
+	--merge-alleles ../data/raw/ldsc/w_hm3.snplist \
+	--snp rsID \
+	--N-col N \
+	--a1 A1 \
+	--a2 A2 \
+	--p P \
+	--signed-sumstats BETA,0 \
+	--out ${me_dir}/ldsc/${bm}_${ancestry}_ldsc

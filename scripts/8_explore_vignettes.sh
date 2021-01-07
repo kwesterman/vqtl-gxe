@@ -1,12 +1,12 @@
 #!/bin/bash
 
 
-bm=$1
-snp=$2
-exposure=$3
-ancestry=$4
-raw_exposure=$5
-raw_phenofile=$6
+bm=$1  # Ex. tg
+snp=$2  # Ex. rs12345
+exposure=$3  # Ex. 21001 (corresponds to BMI)
+ancestry=$4  # Ex. EUR
+raw_exposure=$5  # Ex. f.21001.0.0
+raw_phenofile=$6  # Ex. ukb10528.tab
 
 
 #$ -l os=RedHat7

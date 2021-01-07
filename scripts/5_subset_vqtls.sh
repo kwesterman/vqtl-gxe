@@ -13,7 +13,7 @@ qctool="../../opt/qctool_v2.0.6-CentOS\ Linux7.3.1611-x86_64/qctool"
 for chr in {1..22}; do
 	eval "${qctool}" \
 		-g /broad/ukbb/imputed_v3/ukb_imp_chr${chr}_v3.bgen \
-		-s /humgen/diabetes/UKBB_app27892/ukb27892_imp_chrAUT_v3_s487395.sample \
+		-s /humgen/florezlab/UKBB_app27892/ukb27892_imp_chrAUT_v3_s487395.sample \
 		-incl-positions ${ewis_dir}/ewis_variants.txt \
 		-og ${ewis_dir}/ewis_genotypes_chr${chr}.bgen \
 		-os ${ewis_dir}/ewis_genotypes_chr${chr}.sample

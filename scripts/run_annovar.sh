@@ -7,5 +7,3 @@ perl $ANNOVARDIR/annotate_variation.pl \
         -build hg19 \
         $TARGETDIR/vqtl_MA_hits.avinput \
         $ANNOVARDIR/humandb/
-
-rm tmp.avinput

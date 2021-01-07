@@ -34,7 +34,6 @@ names(phenos)[1] <- "id"
 fwrite(phenos, "../data/processed/phesant_phenos/input_phenos.csv")
 
 read_tsv("../opt/PHESANT/variable-info/outcome_info_final_multi_ancestry_jan2020.tsv", na="NA") %>%
-  #mutate(EXCLUDED_NEALE = ifelse(EXCLUDED_NEALE == "YES-SEX", "", EXCLUDED_NEALE)) %>%
   #mutate(EXCLUDED = case_when(
   #  EXCLUDED == "REMOVE" ~ "YES-ORIGINAL",  # Accept all removals from original PHESANT approach
   #  EXCLUDED_NEALE %in% c("YES-SEX", "YES-AGE") ~ "",  # Keep sex and age as exposures
@@ -47,15 +46,19 @@ read_tsv("../opt/PHESANT/variable-info/outcome_info_final_multi_ancestry_jan2020
   #write_tsv("../data/processed/phesant_phenos/exposure_info.tsv")
   mutate(EXCLUDED = case_when(
     EXCLUDED_NEALE %in% c("YES-SEX", "Yes-AGE", "YES-ASSESSMENT-CENTRE") ~ "",  # Neale exclusions to be kept
-    EXCLUDED_NEALE != "" ~ "REMOVE",  # Otherwise, remove all Neale exclusions
-    Category %in% c(43:50, 2000:2025, 100092:100093) ~ "REMOVE",
+    grepl("Diet by 24-hour recall", Path) ~ "",  # Also keep all 24HR diet data
+    EXCLUDED_NEALE != "" ~ "REMOVE_NEALE",  # Otherwise, remove all Neale exclusions
+    Category %in% c(  # Additionally remove the following...
+      2000:2025,  # Hospital records
+      100092:100093,  # Cancer and death registers
+      9081,
+      100081, 17518, 51428  # Blood-based assays
+    ) ~ "REMOVE",
     TRUE ~ ""
   )) %>%
   select(FieldID, CAT_MULT_INDICATOR_FIELDS, CAT_SINGLE_TO_CAT_MULT,
          DATA_CODING, Path, Category, Field, ValueType, Units, Notes,
          Link, EXCLUDED) %>%
-  #filter(EXCLUDED == "",
-  #       Field != "") %>%
   write_tsv("../data/processed/phesant_phenos/ewis_variable_info.tsv")
 EOF
 
@@ -91,9 +94,13 @@ names(phesant_phenos)[1] <- "id"
 
 write(names(phesant_phenos)[-1], file="../data/processed/ewis/ewis_phenotype_list.txt")
 
+INT <- function(x) qnorm((rank(x, na.last="keep") - 0.5) / sum(!is.na(x)))
+
 for (anc in ancestries) {
 	fread(paste0("../data/processed/vqtl_phenos_", anc, ".csv")) %>%
-		select(id, all_of(paste0(biomarkers, "_adj"))) %>%
+		select(id, all_of(biomarkers),
+			all_of(paste0(biomarkers, "_adj"))) %>%
+    		mutate_at(biomarkers, list(INT = INT)) %>%
 		inner_join(phesant_phenos, by="id") %>%
 		write_csv(paste0("../data/processed/ewis/ewis_phenos_", anc, ".csv"))
 }

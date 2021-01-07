@@ -27,19 +27,25 @@ biomarkers_pretty <- c(
   "Bilirubin-Tot", "TG", "Urea"
 )
 
-n_eff <- 16.2
+n_eff <- 11.6
 bonferroni <- 5e-8 / n_eff
 ```
 
 ```{r load-data, cache=2}
 # No INFO filter needed here due to prior INFO filtering in postprocessing script
 
+bim_df <- fread("../data/processed/all_chr.bim",
+                col.names=c("CHR", "SNP", "CM", "POS", "ALT", "REF")) %>%
+  select(SNP, CHR, POS)
+
 read_nom_vqtl <- function(bm, ancestry) {
   if (ancestry == "MA") {
     fread(paste0("../data/processed/vqtl_ss/metal/", bm, "_MA_1.tbl_nom"),
           stringsAsFactors=F, data.table=F) %>%
-      select(SNP, P, Dir, ISq, HetP) %>%
-      separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+      select(SNP, REF, ALT, P, Dir, ISq, HetP) %>%
+      inner_join(bim_df, by="SNP") %>%
+      mutate_at(vars(ALT, REF), toupper) %>%
+      mutate(CHR=as.character(CHR))
   } else {
     fread(paste0("../data/processed/vqtl_ss/", 
                  bm, "_", ancestry, "_vqtl_merged_nom"),
@@ -54,7 +60,8 @@ read_nom_me <- function(bm, ancestry) {
     fread(paste0("../data/processed/main_effect_ss/metal/", bm, "_MA_1.tbl_nom"),
           stringsAsFactors=F, data.table=F) %>%
       select(SNP, P, Dir, ISq, HetP) %>%
-      separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+      inner_join(bim_df, by="SNP") %>%
+      mutate(CHR=as.character(CHR))
   } else {
     fread(paste0("../data/processed/main_effect_ss/", 
                  bm, "_", ancestry, "_ME_merged_nom"),
@@ -155,7 +162,7 @@ find_overlaps <- function(df, pval_col, locus_width) {
 ## Meta-analysis results
 
 Due to correlations between biomarkers, the associated multiple hypothesis testing correction can be eased somewhat. Following the approach taken by Wang et al. 2019, we calculated the number of effective phenotypes using the eigenvalues of the biomarker covariance matrix (as taken from PCA) as: $(\Sigma_{k=1}^p\lambda_k)^2/\Sigma_{k=1}^p\lambda_k^2$.
-Using the set of 20 adjusted biomarkers in the European sample, this produced an estimate of 16.2 effective biomarkers, for a corrected p-value threshold of 5$\times$10^-8^ / 16.2 = 3.1$\times$10^-9^.
+Using the set of 20 adjusted biomarkers across all ancestries with mean-imputation of missing values, this produced an estimate of 11.6 effective biomarkers, for a corrected p-value threshold of 5$\times$10^-8^ / 11.6 = 4.3$\times$10^-9^.
 
 ```{r vqtl-me-overlaps, cache=2, dependson=c("biomarkers", "pruning")}
 vqtl_me_overlaps <- lapply(setNames(biomarkers, biomarkers), function(bm) {
@@ -321,7 +328,6 @@ p2 <- ggplot() +
 plot_grid(p1 + guides(color=F), 
           p2 + guides(color=F), 
           align='v', nrow=2, rel_heights=c(5, 5))
-
 # make_manhattan(vqtl_concat_minP, "P", ylims=c(2, 100))
 # make_manhattan(me_concat_minP, "P", ylims=c(2, 100))
 ```
@@ -350,10 +356,10 @@ alt_mh_data <- bind_rows(list(vqtl=vqtl_list$alt$MA,
   #   TRUE ~ CHR
   # ), levels=c(1:22, "me_nom", "me_sugg", "me_gw")))
   mutate(color = factor(case_when(
-    source == "vqtl" ~ CHR,
+    source == "vqtl" ~ as.character(CHR),
     # nlp >= alt_mh_thresh ~ CHR,
     SNP %in% alt_vqtl_gw ~ "vqtl_gw",
-    TRUE ~ CHR
+    TRUE ~ as.character(CHR)
   ), levels=c(1:22, "vqtl_gw")))
 
 # Trim points in crowded regions (credit to RaMWAS package for code snippet)
@@ -415,7 +421,7 @@ alt_p2 <- ggplot() +
   geom_point(data=filter(alt_mh_data, source == "me"), 
              aes(x=x_coord, y=nlp, color=factor(color)), 
              size=0.75, alpha=1) +
-  geom_hline(yintercept=-log10(bonferroni_thresh), linetype="dashed", color="black") + 
+  geom_hline(yintercept=-log10(bonferroni), linetype="dashed", color="black") + 
   scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
                      labels=c(1:16, 18, 20, 20, 22), 
                      expand=c(0,0)) +
@@ -470,11 +476,11 @@ rs1229984 in *ADH1B* affects alcohol processing in the liver and might be expect
 
 ```{r adh1b-example}
 adh1b_vqtl <- vqtl_merged %>%
-  filter(grepl("4:100239319_", SNP)) %>%
+  filter(SNP == "rs1229984") %>%
   select(bm, SNP, P)
 
 adh1b_me <- me_merged %>%
-  filter(grepl("4:100239319_", SNP)) %>%
+  filter(SNP == "rs1229984") %>%
   select(bm, SNP, P)
 
 full_join(adh1b_vqtl, adh1b_me, by=c("bm", "SNP"), suffix=c("-vQTL", "-ME")) %>%
@@ -585,7 +591,7 @@ anc_overlap_tbl %>%
 
 An additional vQTL analysis was conducted for BMI in the European group for the purposes of comparison with the results from Wang et al. Though there are small differences in the preprocessing steps used, we would expect that our results would match fairly closely.
 
-```{r bmi-comparison, out.width="70%"}
+```{r bmi-comparison, out.width="55%"}
 bmi_vqtl_df <- fread("../data/processed/vqtl_ss/bmi_EUR_vqtl_merged_nom",
                      data.table=F, stringsAsFactors=F)
 bmi_pruned <- prune_variants(bmi_vqtl_df, "P", 2e-9)
@@ -673,7 +679,7 @@ vqtl_var_df %>%
   write_csv("../data/processed/ewis/ewis_variants.txt", col_names=F)
 ```
 
-The `r nrow(distinct(filter(vqtl_var_df, ancestry == "MA", P < bonferroni), index_var))` variants passing a multiple testing-corrected genome-wide threshold (p = `r signif(bonferroni, 2)`) will be taken forward for the formal analysis. However, all `r nrow(distinct(filter(vqtl_var_df, P < bonferroni), index_var))` index variants passing 5e-8 in the meta-analysis or any ancestry-specific analysis will be tested to have these results available.
+The `r nrow(distinct(filter(vqtl_var_df, ancestry == "MA", P < bonferroni), index_var))` variants (`r nrow(filter(vqtl_var_df, ancestry == "MA", P < bonferroni))` variant-biomarker pairs) passing a multiple testing-corrected genome-wide threshold (p = `r signif(bonferroni, 2)`) will be taken forward for the formal analysis. However, all `r nrow(distinct(filter(vqtl_var_df, P < bonferroni), index_var))` index variants passing 5e-8 in the meta-analysis or any ancestry-specific analysis will be tested to have these results available.
 
 ## Biomarker distributions (for reference)
 

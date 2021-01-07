@@ -1,0 +1,287 @@
+---
+output: html_document
+title: "Exposome-wide interaction study results for vQTL variants and metabolic biomarkers"
+---
+
+Based on the initial vQTL analysis in 20 metabolic biomarkers, approximately 1000 genome-wide significant index variants (ancestry-specific or meta-analyzed) were taken forward into the exposome-wide association testing phase. These were tested for interaction with each of ~2000 PHESANT-derived phenotypes affecting each of the 20 biomarkers. Interaction testing was performed using GEM in each ancestry separately, then ancestry-specific results were combined using METAL. The meta-analysis results are summarized here.
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
+                      fig.path="../output/diet_ewis_summary/",
+                      cache.path="../cache/diet_ewis_summary/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer", "GenomicRanges"), 
+  library, character.only=T))
+theme_set(theme_bw())
+```
+
+```{r vqtl-concept-viz, fig.width=2, fig.asp=0.7}
+sim_df <- tibble(
+  gvec = rbinom(2000, 2, 0.4),
+  evec = rbinom(2000, 1, 0.5),
+  yvec = rnorm(2000, 1.5 * gvec * evec, 1) 
+) %>%
+  mutate(gvec=factor(gvec, labels=c("AA", "AB", "BB")),
+         evec=factor(evec, labels=c("Unexposed", "Exposed")))
+
+ggplot(sim_df, aes(x=gvec, y=yvec)) +
+  geom_boxplot(outlier.color="white") +
+  geom_jitter(aes(color=evec), alpha=0.4, width=0.1) +
+  scale_color_manual(values=brewer.pal(2, "Dark2"), 
+                     labels=c("Diet 1", "Diet 2")) +
+  labs(x="Genotype", y="Phenotype") +
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_blank(),
+        panel.grid=element_blank(),
+        legend.title=element_blank(), legend.position=c(0.15, 0.84))
+        # legend.background=element_rect(size=0.2, color="black"))
+```
+
+```{r biomarkers}
+biomarkers <- c(
+  "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
+  "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
+  "bilirubin_tot", "tg", "urea"
+)
+biomarkers_pretty <- c(
+  "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
+  "CysC", "Bilirubin-Dir", "GGT", "RG", "HbA1c", "HDL-C", "LDL-C", "LipA",
+  "Bilirubin-Tot", "TG", "Urea"
+)
+
+vqtl_bonferroni <- 5e-8 / 16.2
+```
+
+```{r load-data, cache=2}
+exposures <- scan("../../data/processed/diet_ewis/24hr_exposures.txt", 
+                  what=character())
+
+ewis_df_raw <- fread("../../data/processed/diet_ewis/diet_ewis_EUR_results_nom.csv",
+                     data.table=F, stringsAsFactors=F)
+
+ewis_genotypes_pvar <- read_tsv("../../data/processed/ewis/ewis_genotypes.pvar") %>%
+  select(CHR=`#CHROM`, POS, ID)
+vqtl_df <- read_csv("../../data/processed/ewis/ewis_variant_data.csv") %>%
+  left_join(ewis_genotypes_pvar, by=c("CHR", "POS")) %>%
+  select(SNP=ID, bm, ancestry, P_vqtl=P)
+```
+
+```{r variable-info}
+data_codings <- read_csv("../../opt/PHESANT/variable-info/data-coding-ordinal-info-nov2019-update.txt")
+med_coding <- read_tsv("../../data/raw/ukb_medication_coding.tsv")
+illness_coding <- read_tsv("../../data/raw/ukb_illness_coding.tsv")
+
+variable_info <- read_tsv("../../data/processed/phesant_phenos/ewis_variable_info.tsv") %>%
+  select(FieldID, Category, coding=DATA_CODING, Path, Field) %>%
+  separate(Path, into=paste0("Category_Level_", 1:6), sep=" > ", remove=F) %>%
+  mutate(exp_group = case_when(
+    Category_Level_2 %in% c(
+      "Diet by 24-hour recall", "Mental health", "Physical measures", 
+      "Assay results",  "Digestive health"
+    ) ~ Category_Level_2,
+    (
+      Category_Level_3 %in% c("Operations", "Sex-specific factors")
+    ) ~ "Miscellaneous",
+    Category_Level_2 %in% c("Verbal interview", "Touchscreen") ~ Category_Level_3,
+    Category_Level_2 == "Physical activity measurement" ~ "Lifestyle and environment",
+    (
+      Category_Level_3 == "Sociodemographics" |
+        Field == "Townsend deprivation index at recruitment" |
+        Field == "UK Biobank assessment centre"
+    ) ~ "Sociodemographics",
+    TRUE ~ "Miscellaneous"
+  )) %>%
+  mutate(FieldID = as.character(FieldID)) %>%
+  filter(!(exp_group %in% c("Assay results")))
+```
+
+```{r process-primary-ewis}
+# Identify significant vQTL-biomarker pairs 
+primary_vqtl_df <- vqtl_df %>%
+  filter(ancestry == "MA",
+         P_vqtl < vqtl_bonferroni) %>%
+  select(-ancestry)
+
+# Subset to only the relevant variant-trait combos from meta-analysis
+ewis_df <- ewis_df_raw %>%
+  inner_join(primary_vqtl_df, by=c("SNP", "bm")) %>%  # Subset to significant vQTL pairs
+  # filter(grepl("servings|\\.1000", exposure)) %>%  # Subset to only food groups and nutrients
+  mutate(grp = ifelse(grepl("\\.1000", exposure), "nutrient", "food group"))
+
+ewis_bonferroni <- 0.05 / nrow(primary_vqtl_df) / length(unique(ewis_df$exposure))
+```
+
+```{r ewis-manhattan}
+ewis_mh_df <- ewis_df %>%
+  mutate(P = pmax(P, 1e-300, na.rm=T)) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+  # filter((P < 0.01) | ((idx * nrow(.)) %% 100 == 0))
+ewis_mh_lims <- ewis_mh_df %>%
+  group_by(grp) %>%
+  summarise(x = (min(idx) + max(idx)) / 2)
+ewis_mh_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(ewis_mh_lims))
+ewis_mh_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_hline(yintercept=-log10(ewis_bonferroni), linetype="dashed", color="gray") +
+  scale_x_continuous(breaks=ewis_mh_lims$x,
+                     labels=ewis_mh_lims$grp) + 
+  scale_y_log10() +
+  scale_color_manual(values=ewis_mh_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+```{r apoe-manhattan}
+ewis_apoe_mh_df <- ewis_df %>%
+  # filter(P < ewis_bonferroni) %>%
+  mutate(P = pmax(P, 1e-300, na.rm=T)) %>%
+  arrange(desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.),
+         SNPcolor=factor(SNP, levels=rev(unique(SNP))[1:17]))
+  # filter((P < 0.01) | ((idx * nrow(.)) %% 100 == 0))
+ewis_apoe_mh_lims <- ewis_apoe_mh_df %>%
+  group_by(grp) %>%
+  summarise(x = (min(idx) + max(idx)) / 2)
+# ewis_apoe_mh_colors <- colorRampPalette(brewer.pal(17, "Paired"))(nrow(ewis_apoe_mh_lims))
+ewis_apoe_mh_colors <- c(brewer.pal(17, "Paired"), nrow(ewis_apoe_mh_lims), "#000000")
+ewis_apoe_mh_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=SNPcolor)) +
+  geom_point(size=0.75) +
+  geom_hline(yintercept=-log10(ewis_bonferroni), linetype="dashed", color="gray") +
+  # scale_x_continuous(breaks=ewis_apoe_mh_lims$x,
+  #                    labels=ewis_apoe_mh_lims$grp) + 
+  scale_y_log10() +
+  scale_color_manual(values=ewis_apoe_mh_colors) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+```{r test-summary, fig.width=3, fig.asp=0.5}
+rsid_to_gene <- c(
+  rs7412="APOE", rs12443634="CMIP",  rs77924615="PDILT", "9:136138765"=NULL,
+  rs1145078="GATM", rs3767145="ALPL", rs2330805="GGT1", rs6073958="PLTP",
+  rs1065853="APOE", rs17476364="HK1", rs8107974="SUGP1", rs147350387="PKD1",
+  rs35363532=NULL, rs200210321="SUGP1", rs4299376="ABCG8", rs429358="APOE",
+  rs34954997="APOC1"
+)
+
+a <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  mutate(SNP = gsub("_.*", "", SNP),
+         snp_label = ifelse(is.na(rsid_to_gene[SNP]), SNP,
+                            paste0(SNP, " (", rsid_to_gene[SNP], ")")),
+         bm_pretty = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  arrange(P) %>%
+  mutate(snp_label = factor(snp_label, levels=unique(snp_label)))
+a %>%
+  ggplot(aes(x=fct_rev(snp_label), y=-log10(P), color=bm_pretty)) +
+  geom_point(size=0.75) +
+  labs(x="", y=expression(-log[10](italic(p))*" - Interaction")) +
+  scale_color_brewer(palette="Paired") +
+  guides(color=guide_legend(ncol=2)) +
+  theme(axis.text.x=element_text(angle=55, hjust=1),
+        legend.title=element_blank(),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+```{r ewis-summary-by-biomarker}
+ewis_bm_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(bm) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+# ewis_bm_summary %>%
+#   arrange(desc(n)) %>%
+#   mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+#   setNames(c("Biomarker", "# hits")) %>%
+#   kable(caption="Summary of significant GEI hits at vQTL-biomarker pairs across biomarkers") %>%
+#   kable_styling(full_width=F)
+
+ewis_exp_group_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+ewis_bm_exp_group_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(bm, exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  mutate(bm = factor(bm, levels=ewis_bm_summary$bm,
+                     labels=biomarkers_pretty[match(ewis_bm_summary$bm, biomarkers)]),
+         exp_group = factor(exp_group, levels=rev(ewis_exp_group_summary$exp_group)))
+
+ewis_bm_exp_summary %>%
+  ggplot(aes(x=bm, y=n, fill=exp_group)) +
+  geom_bar(stat="identity") +
+  scale_fill_brewer(palette="Paired",
+                    name="Exposure group") +
+  labs(x="", y="", 
+       title="Summary of significant GEI hits across biomarkers and exposures") +
+  theme(axis.text.x = element_text(angle=30, hjust=1))
+```
+
+```{r tofu-alp-example, fig.width=2, fig.asp=0.7}
+diet_df <- fread("select_diet_dataset", data.table=F, stringsAsFactors=F) %>%
+  select(id=Florez_IID, 
+         savbisc=savorybiscuitservings_yesterday.102470_average,
+         tofu=tofuservings_yesterday.103270_average,
+         snackpot=snackpotservings_yesterday.102760_average,
+         tcals=energy_yesterday_total.100002_average)
+alpl_df <- fread("alp_rs3767145_.raw", data.table=F, stringsAsFactors=F) %>%
+  select(id=IID, dosage=rs3767145_A) %>%
+  mutate(genotype=round(dosage))
+cysC_df <- fread("cysC_rs77924615_.raw", data.table=F, stringsAsFactors=F) %>%
+  select(id=IID, dosage=rs77924615_G) %>%
+  mutate(genotype=round(dosage))
+apoe_df <- fread("chol_rs7412_.raw", data.table=F, stringsAsFactors=F) %>%
+  select(id=IID, dosage=rs7412_C) %>%
+  mutate(genotype=round(dosage))
+eur_phenos <- fread("../../data/processed/vqtl_phenos_EUR.csv", 
+                    data.table=F, stringsAsFactors=F) %>%
+  inner_join(diet_df, by="id") %>%
+  inner_join(apoe_df, by="id")
+
+# lm(alp ~ genotype * tofu, data=eur_phenos) %>%
+#   broom::tidy()
+
+alpl_alc_strat_mean_df <- eur_phenos %>%
+  mutate(tofu_tert = cut(savbisc, quantile(savbisc, seq(0, 1, length.out=3), na.rm=T), 
+                    include.lowest=T),
+         tofu_tert = factor(tofu_tert, labels=c("< median", "> median")),
+         genotype = factor(genotype, labels=c("TT", "CT", "CC"))) %>%
+  group_by(genotype, tofu_tert) %>%
+  summarise(m = mean(chol, na.rm=T),
+            se = sd(chol, na.rm=T) / sqrt(n()))
+alpl_alc_strat_mean_df %>%
+  ggplot(aes(x=genotype, y=m, group=tofu_tert, color=tofu_tert)) +
+  geom_point(position=position_dodge(width=0.2)) +
+  geom_errorbar(aes(ymin=m - se, ymax=m + se), width=0.2,
+                position=position_dodge(width=0.2)) +
+  scale_color_brewer(name="Biscuit consumption", palette="Dark2") +
+  labs(x=expression("Genotype at rs7412 (APOE)"),
+       y="Cholesterol (mmol/L)") +
+  theme(legend.position=c(0.75, 0.28))
+```
+
+
+```{r ewis-summary-by-exposure, eval=F}
+ewis_exp_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(Field, exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+ewis_exp_summary %>%
+  arrange(desc(n)) %>%
+  setNames(c("Exposure", "# hits")) %>%
+  kable(caption="Summary of significant GEI hits at vQTL-biomarker pairs across exposures") %>%
+  kable_styling(full_width=F)
+```
+

@@ -69,13 +69,13 @@ if (grepl("metal", filepath)) {
   use_cols <- me_cols
 }
 
-high_qual_variants <- read_tsv("../data/processed/info0.5_variants.txt", 
+high_qual_variants <- read_tsv("../data/processed/ukb_rsIDs_maf0.005_info0.5.txt", 
                                col_names=F, col_types="c")[[1]]
 
 ss_df <- fread(filepath, stringsAsFactors=F, data.table=F) %>%
   select(all_of(use_cols)) %>%
   mutate(P = as.numeric(P)) %>%
-  filter(gsub("_.*", "", SNP) %in% high_qual_variants)
+  filter(SNP %in% high_qual_variants)
 if ("AF" %in% names(ss_df)) ss_df <- filter(ss_df, pmin(AF, 1 - AF) > 0.01)
 
 ss_df %>%

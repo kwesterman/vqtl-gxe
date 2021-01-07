@@ -27,9 +27,9 @@ cat ../data/processed/ewis/ewis_phenotype_list.txt \
 
 R --vanilla <<EOF
 p <- data.table::fread("../data/processed/ewis/ewis_phenos_${ancestry}.csv", 
-		       select=c("id", "${biomarker}_adj", "${exposure}"), 
+		       select=c("id", "${biomarker}_INT", "${exposure}"), 
 		       data.table=F, stringsAsFactors=F)
-p[["pheno"]] <- p[["${biomarker}_adj"]]
+p[["pheno"]] <- p[["${biomarker}_INT"]]
 p[["e"]] <- p[["${exposure}"]]
 if (
   sum(!is.na(p[["e"]])) < 100 |  # Less than 100 non-missing exposure values

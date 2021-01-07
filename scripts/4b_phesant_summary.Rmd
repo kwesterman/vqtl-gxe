@@ -84,7 +84,6 @@ Additional exposure exclusions:
     - Hospital inpatient (categories 2000-2025)
     - Cancer register (category 100092)
     - Death register (category 100093)
-* Medication (category 100075)? (not yet excluded)
 
 After exclusions, `r nrow(vi)` variables remain for processing.
 
@@ -112,6 +111,8 @@ vi %>%
 ```
 
 # PHESANT results
+
+In total, are running PHESANT, there are approximately 2000 resulting exposures to be used for exposome-wide interaction analysis.
 
 ```{r variable-counts}
 variable_flow_counts <- read_csv("../data/processed/phesant_phenos/variable-flow-counts-1-1.txt") %>%
@@ -152,11 +153,83 @@ variable_flow_counts %>%
   filter(Category != "") %>%
   select(Category, countValue) %>%
   setNames(c("Category", "Count")) %>%
-  kable(caption="PHESANT variable counts")
+  kable(caption="PHESANT variable counts") %>%
+  kable_styling()
 ```
 
-So, in total, there are approximately 2000 resulting exposures to be used for exposome-wide interaction analysis.
+```{r variable-info}
+data_codings <- read_csv("../opt/PHESANT/variable-info/data-coding-ordinal-info-nov2019-update.txt")
+med_coding <- read_tsv("../data/raw/ukb_medication_coding.tsv")
+illness_coding <- read_tsv("../data/raw/ukb_illness_coding.tsv")
 
-# Next steps
+variable_info <- read_tsv("../data/processed/phesant_phenos/ewis_variable_info.tsv") %>%
+  select(FieldID, Category, coding=DATA_CODING, Path, Field, EXCLUDED) %>%
+  separate(Path, into=paste0("Category_Level_", 1:6), sep=" > ", remove=F) %>%
+  mutate(exp_group = case_when(
+    (  # Define psychosocial factors
+      Category_Level_2 == "Mental health" | 
+        Category_Level_3 == "Psychosocial factors"
+    ) ~ "Psychosocial factors",
+    (  # Define health and medical history
+      Category_Level_2 == "Digestive health" |
+      Category_Level_3 %in% c("Health and medical history", "Family history",
+                              "Medical information")
+    ) ~ "Health and medical history", 
+    (  # Define lifestyle and environment
+      Category_Level_2 %in% c("Local environment", "Work environment",
+                              "Diet by 24-hour recall", 
+                              "Physical activity measurement")  |
+        Category_Level_3 %in% c("Lifestyle and environment", 
+                                "Residential air pollution")
+    ) ~ "Lifestyle and environment", 
+    Category_Level_2 == "Physical measures" ~ "Physical measures",  # Define physical measures
+    Category_Level_2 == "Assay results" ~ "Miscellaneous",  # Because most assays (blood) are not used
+    Category_Level_3 == "Medical conditions" ~ "Medical conditions",  # Define medical conditions
+    Category_Level_3 == "Medications" ~ "Medications",  # Define medications
+    (  # Define sociodemographics
+      Category_Level_3 %in% c("Sociodemographics", 
+                              "Indices of Multiple Deprivation") |
+        Field == "Townsend deprivation index at recruitment" |
+        Field == "UK Biobank assessment centre"
+    ) ~ "Sociodemographics",
+    (
+      Category_Level_2 %in% c("Cognitive function", "Cognitive function online") 
+    ) ~ "Cognitive function",  # Define cognitive function
+    TRUE ~ "Miscellaneous"  # Everything else is miscellaneous
+  )) %>%
+  mutate(FieldID = as.character(FieldID))
+```
 
-* How to assess reasonable completeness of our currently-available phenotypes in the Florez project? Do any more need to be requested? Maybe this can wait until after the first EWIS round.
+```{r phesant-results-summary-table}
+exposures <- scan("../data/processed/ewis/ewis_phenotype_list.txt", 
+                  what=character())
+
+exp_group_examples <- c(
+  "Health and medical history"="Chest pain or discomfort; ever diagnosed with IBS; back pain for 3+ months",
+  "Lifestyle and environment" = "Duration of walks; coffee intake; current tobacco smoking",
+  "Medical conditions" = "Self-reported medical conditions during verbal interview",
+  "Medications" = "Self-reported medication use during verbal interview",
+  "Miscellaneous" = "Sex; liver fat %; average heart rate",
+  "Physical measures" = "Body mass index; forced vital capacity; systolic blood pressure",
+  "Psychosocial factors" = "Work/job satisfaction; neuroticism score; leisure/social activities",
+  "Sociodemographics" = "UKB assessment centre; job involves shift work; Townsend deprivation index"
+)
+
+exposure_fields <- tibble(
+  exposure = exposures,
+  FieldID = gsub("_.*", "", exposures)  # Remove specific field value for discrete fields
+) %>%
+  mutate_all(~ifelse(. %in% c("age", "sex"), c(age=31, sex=21003)[.], .)) %>%
+  left_join(variable_info, by="FieldID") %>%
+  select(FieldID, Field, exposure, exp_group) %>%
+  group_by(exp_group) %>%
+  summarise(`# fields` = n()) %>%
+  # `Example fields` = paste(sample(Field, 3), collapse="; "))
+  mutate(`Example fields` = exp_group_examples[exp_group]) %>%
+  dplyr::rename(`Exposure group` = exp_group)
+            
+exposure_fields %>%
+  kable(caption="PHESANT variable counts by exposure group") %>%
+  kable_styling()
+```
+

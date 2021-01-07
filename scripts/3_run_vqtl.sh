@@ -1,12 +1,12 @@
 #!/bin/sh
 
 
-#$ -l h_vmem=25G
+#$ -l h_vmem=20G
 #$ -l h_rt=28:00:00
 #$ -j y
 
-#$ -pe smp 4
-#$ -binding linear:4
+#$ -pe smp 6
+#$ -binding linear:6
 #$ -R y
 
 pheno=$1
@@ -47,7 +47,7 @@ ${osca} \
 	--bfile ${bfile} \
 	--pheno ${pheno}_${ancestry}_chr${chr}_tmp.pheno \
 	--vqtl-mtd 2 \
-	--maf 0.05 \
+	--maf 0.01 \
 	--thread-num $threads \
 	--out ../data/processed/vqtl_ss/${pheno}_${ancestry}_chr${chr}
 	#--extract-snp ${genodir}/chr${chr}_unique_snps.txt \
@@ -58,7 +58,7 @@ ${plink2} \
 	--bfile ${bfile} \
 	--pheno ${pheno}_${ancestry}_chr${chr}_tmp.pheno \
 	--pheno-name ${pheno}_adj \
-	--maf 0.05 \
+	--maf 0.01 \
 	--glm omit-ref cols=+a1freq \
 	--out ../data/processed/main_effect_ss/${pheno}_${ancestry}_chr${chr}
 
