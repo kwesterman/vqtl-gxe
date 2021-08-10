@@ -1,12 +1,17 @@
 #!/bin/bash
 
 
+#$ -l h_vmem=15G
+#$ -l h_rt=00:30:00
+
+#$ -cwd
+#$ -j y
+
+
 pheno=$1
 anc=$2
 p_col_vqtl=12
 p_col_ME=12
-
-cd kw/ukbb-vqtl/scripts
 
 source /broad/software/scripts/useuse
 use .r-3.6.0

@@ -2,8 +2,10 @@
 
 
 #$ -l h_vmem=15G
-#$ -l h_rt=16:00:00
+#$ -l h_rt=24:00:00
+#$ -cwd
 #$ -j y
+
 
 bm=$1
 ancestry=EUR
@@ -14,9 +16,11 @@ use Anaconda3
 use .r-3.6.0
 
 
-cd ~/kw/ukbb-vqtl/scripts
 vqtl_dir=../data/processed/vqtl_ss
+mkdir -p ${vqtl_dir}/ldsc	
 me_dir=../data/processed/main_effect_ss
+mkdir -p ${me_dir}/ldsc	
+
 source activate ldsc
 
 
@@ -46,7 +50,7 @@ R --vanilla <<EOF
     select(rsID, A1, A2, freq, NMISS, BETA=beta, SE=se, P) %>%
     write_tsv("${vqtl_dir}/ldsc/${bm}_${ancestry}_hm3")
   sumstats <- data.table::fread("${me_dir}/${bm}_${ancestry}_ME_merged", data.table=F, stringsAsFactors=F) %>%
-    setNames(c("CHR", "POS", "ID", "A2", "ALT", "A1", "TEST", "N", "BETA", "SE", "T_STAT", "P")) %>%
+    setNames(c("CHR", "POS", "ID", "A2", "ALT", "A1", "A1_FREQ", "TEST", "N", "BETA", "SE", "T_STAT", "P")) %>%
     mutate(CHR = as.character(CHR),
 	   P = as.numeric(P)) %>%
     inner_join(var_annot, by=c("CHR", "POS")) %>%

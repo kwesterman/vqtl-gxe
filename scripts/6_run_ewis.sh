@@ -11,12 +11,11 @@ end_pheno_idx=$4
 #$ -l h_vmem=10G
 #$ -l h_rt=24:00:00
 #$ -j y
+#$ -cwd
 
 
 source /broad/software/scripts/useuse
 use .r-3.6.0
-
-cd kw/ukbb-vqtl/scripts
 
 mkdir -p ../data/processed/ewis/${biomarker}
 
@@ -27,20 +26,20 @@ cat ../data/processed/ewis/ewis_phenotype_list.txt \
 
 R --vanilla <<EOF
 p <- data.table::fread("../data/processed/ewis/ewis_phenos_${ancestry}.csv", 
-		       select=c("id", "${biomarker}_INT", "${exposure}"), 
+		       select=c("id", "${biomarker}_adj", "${exposure}"), 
 		       data.table=F, stringsAsFactors=F)
-p[["pheno"]] <- p[["${biomarker}_INT"]]
+p[["pheno"]] <- p[["${biomarker}_adj"]]
 p[["e"]] <- p[["${exposure}"]]
 if (
   sum(!is.na(p[["e"]])) < 100 |  # Less than 100 non-missing exposure values
-  (all(p[["e"]] %in% c(0, 1)) & (min(table(p[["e"]])) < 50))  # Binary w/ either exposure having <50 instances 
-) p$pheno <- NA
+  (all(p[["e"]] %in% c(0, 1, NA)) & (min(table(p[["e"]])) < 50))  # Binary w/ either exposure having <50 instances 
+) p[["pheno"]] <- NA
 readr::write_csv(dplyr::select(p, id, e, pheno), "../data/processed/ewis/${biomarker}/ewis_phenos_${ancestry}_${exposure}.csv")
 EOF
 
 singularity exec \
 	-B ../data/processed/ewis:/data \
-	../../singularity/gem-v1.2-workflow.simg \
+	../../singularity/gem-v1.3-workflow.simg \
 	/bin/bash <<EOF
 /GEM/GEM \
 	--pfile /data/ewis_genotypes \
@@ -54,6 +53,7 @@ singularity exec \
 	--missing-value NA \
 	--robust 1 \
 	--threads 1 \
+	--output-style meta \
 	--out /data/${biomarker}/${exposure}_${ancestry}
 EOF
 

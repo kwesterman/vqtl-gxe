@@ -69,7 +69,7 @@ if (grepl("metal", filepath)) {
   use_cols <- me_cols
 }
 
-high_qual_variants <- read_tsv("../data/processed/ukb_rsIDs_maf0.005_info0.5.txt", 
+high_qual_variants <- read_tsv("../data/processed/ukb_rsIDs_maf0.005_info0.8.txt", 
                                col_names=F, col_types="c")[[1]]
 
 ss_df <- fread(filepath, stringsAsFactors=F, data.table=F) %>%
@@ -87,6 +87,7 @@ ss_df %>%
   write_tsv(paste0(filepath, "_gw"))
   
 qq_dir <- paste0(gsub("/metal", "", dirname(filepath)), "/qq_plots/")
+system(paste0("mkdir -p ", qq_dir))
 write(calc_lambda(ss_df$P), paste0(qq_dir, gsub("_merged|\\.tbl", "_lambda", basename(filepath))))
 plot_filepath <- paste0(qq_dir, gsub("_merged|\\.tbl", "_QQ.pdf", basename(filepath)))
 pdf(file=plot_filepath)

@@ -1,9 +1,12 @@
 #!/bin/bash
 
 
-biomarker=$1
+#$ -l h_vmem=20G
+#$ -l h_rt=1:00:00
+#$ -cwd
+#$ -j y
 
-cd ~/kw/ukbb-vqtl/scripts
+biomarker=$1
 
 METAL=../opt/generic-metal/metal
 
@@ -12,8 +15,10 @@ use .r-3.6.0
 
 
 # vQTL meta-analysis
+# Note: in practice, the P-value != 0 METAL command only removes variants where beta/SE are missing
 
 VQTL_DIR=../data/processed/vqtl_ss
+mkdir -p ${VQTL_DIR}
 
 echo "Performing vQTL meta-analysis for ${biomarker}..."
 
@@ -50,6 +55,7 @@ Rscript 3b_postprocess_vqtl.R ${RES_FILE}
 # Main-effect meta-analysis
 
 ME_DIR=../data/processed/main_effect_ss
+mkdir -p ${ME_DIR}
 
 echo "Performing main-effect meta-analysis for ${biomarker}..."
 

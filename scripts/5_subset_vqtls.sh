@@ -1,7 +1,13 @@
 #!/bin/bash
 
 
-cd ~/kw/ukbb-vqtl/scripts/
+#$ -l h_vmem=20G
+#$ -l h_rt=24:00:00
+
+#$ -cwd
+#$ -j y
+
+
 
 ewis_dir=../data/processed/ewis
 

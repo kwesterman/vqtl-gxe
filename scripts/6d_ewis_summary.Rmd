@@ -7,8 +7,8 @@ Based on the initial vQTL analysis in 20 metabolic biomarkers, approximately 100
 
 ```{r setup, include=F}
 knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
-                      fig.path="../output/6d_vqtl_summary/",
-                      cache.path="../cache/6d_vqtl_summary/")
+                      fig.path="../output/6d_ewis_summary/",
+                      cache.path="../cache/6d_ewis_summary/")
 suppressMessages(silent <- lapply(
   c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot", 
     "pheatmap", "RColorBrewer", "GenomicRanges"), 
@@ -17,18 +17,18 @@ theme_set(theme_bw())
 ```
 
 ```{r biomarkers}
-biomarkers <- c(
+biomarkers <- paste0(c(
   "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
   "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
   "bilirubin_tot", "tg", "urea"
-)
+), "_log")
 biomarkers_pretty <- c(
   "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
   "CysC", "Bilirubin-Dir", "GGT", "RG", "HbA1c", "HDL-C", "LDL-C", "LipA",
   "Bilirubin-Tot", "TG", "Urea"
 )
 
-vqtl_bonferroni <- 5e-8 / 16.2
+vqtl_bonferroni <- 5e-8 / 11.1
 ```
 
 ```{r load-data, cache=2}
@@ -104,7 +104,8 @@ primary_vqtl_df <- vqtl_df %>%
          P_vqtl < vqtl_bonferroni) %>%
   select(-ancestry)
 
-ewis_bonferroni <- 0.05 / nrow(primary_vqtl_df) / 2140
+n_eff_exposures <- 1156.2
+ewis_bonferroni <- 0.05 / nrow(primary_vqtl_df) / n_eff_exposures
 
 # Subset to only the relevant variant-trait combos from meta-analysis
 ewis_df <- ewis_df_raw %>%
@@ -174,7 +175,7 @@ ewis_bm_exp_group_summary <- ewis_df %>%
                      labels=biomarkers_pretty[match(ewis_bm_summary$bm, biomarkers)]),
          exp_group = factor(exp_group, levels=rev(ewis_exp_group_summary$exp_group)))
 
-ewis_bm_exp_summary %>%
+ewis_bm_exp_group_summary %>%
   ggplot(aes(x=bm, y=n, fill=exp_group)) +
   geom_bar(stat="identity") +
   scale_fill_brewer(palette="Paired",
@@ -202,9 +203,9 @@ ewis_exp_summary %>%
 
 The following plot includes all variant-exposures pairs with adjusted ALT as the outcome.
 
-```{r ewis-manhattan-alt}
+```{r ewis-manhattan-alt, eval=F}
 ewis_mh_alt_df <- ewis_df %>%
-  filter(bm == "alt") %>%
+  filter(bm == "alt_log") %>%
   mutate(grp = exp_group) %>%
   arrange(grp, desc(P)) %>%
   mutate(idx = 1:nrow(.) / nrow(.))
@@ -233,7 +234,7 @@ The vQTL analysis showed a strong vQTL effect of rs1229984 on ALT. This is consi
 
 The following plot includes all exposures interacting with rs1229984 with adjusted ALT as the outcome.
 
-```{r alt-adh1b}
+```{r alt-adh1b, eval=F}
 ewis_df %>%
   filter(bm == "alt",
          SNP == "rs1229984") %>%
@@ -271,12 +272,12 @@ ewis_mh_alt_adh1b_df %>%
 
 ### Ancestry breakdown of meta-analysis hits
 
-```{r load-all-ancestry-specific}
+```{r load-all-ancestry-specific, eval=F}
 ewis_anc_all_df <- fread(paste("../data/processed/ewis/ewis_anc_results_nom.csv"),
                          data.table=F, stringsAsFactors=F)
 ```
 
-```{r MA-ancestry-specific}
+```{r MA-ancestry-specific, eval=F}
 ewis_MA_anc_df <- left_join(
   filter(ewis_df, P < ewis_bonferroni),  # Significant hits from meta-analysis
   filter(ewis_anc_all_df, P < 0.05),  # Nominal ancestry-specific hits
@@ -313,7 +314,7 @@ ewis_MA_anc_df %>%
 
 ### Additional ancestry-specific hits
 
-```{r load-data-ancestry}
+```{r load-data-ancestry, eval=F}
 ancestries <- c("EUR", "AFR", "EAS", "SAS")
 
 ancestry_vqtl_df <- vqtl_df %>%
@@ -328,7 +329,7 @@ ewis_anc_df <- fread(paste("../data/processed/ewis/ewis_anc_results_nom.csv"),
   inner_join(ancestry_vqtl_df, by=c("SNP", "bm"))
 ```
 
-```{r nonMA-ancestry-specific}
+```{r nonMA-ancestry-specific, eval=F}
 ewis_nonMA_anc_df <- anti_join(  # Remove all hits from meta-analysis
   filter(ewis_anc_df, P < anc_bonferroni),
   filter(ewis_df, P < ewis_bonferroni),
@@ -393,10 +394,3 @@ anc_ewis_mh_df %>%
   theme(axis.text.x=element_text(angle=45, hjust=1),
         panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
 ```
-
-## To-do
-
-* Are vQTLs indeed enriched for GEI signal?
-    - This would be a confirmation of previous findings
-    - How to test this independent of the influence of the findings from Zhang et al. (non-zero correlation between vQTL and GEI tests when the exposure and outcome are correlated)?
-* Is a vQTL identified for one biomarker more likely to support GEI signals in *other* biomarkers? This would support the idea that there are loci that are globally more likely to participate in interactions, at least with respect to metabolic traits.

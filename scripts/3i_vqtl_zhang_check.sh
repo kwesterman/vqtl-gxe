@@ -5,7 +5,10 @@ biomarker=$1
 exposure=$2
 
 
-cd ~/kw/ukbb-vqtl/scripts
+#$ -l h_vmem=15G
+#$ -l h_rt=01:00:00
+#$ -cwd
+#$ -j y
 
 
 ewis_dir=../data/processed/ewis

@@ -37,37 +37,58 @@ raw_phenos_anc <- raw_phenos %>%
   )) %>%
   filter(!is.na(ancestry))
 
-raw_phenos_anc %>% 
+all_phenos <- bind_rows(list(
+  EUR = eur_phenos,
+  AFR = afr_phenos,
+  EAS = eas_phenos,
+  SAS = sas_phenos
+), .id="ancestry")
+
+all_phenos %>% 
   group_by(ancestry, diabetes) %>%
   summarise(n = n()) %>%
   pivot_wider(names_from = "diabetes", values_from = "n") %>%
   kable(caption = "Diabetes status") %>%
   kable_styling(full_width = F)
 
-raw_phenos_anc %>% 
+all_phenos %>% 
   group_by(ancestry, CHD) %>%
   summarise(n = n()) %>%
   pivot_wider(names_from = "CHD", values_from = "n") %>%
   kable(caption = "CHD status") %>%
   kable_styling(full_width = F)
 
-raw_phenos_anc %>% 
+all_phenos %>% 
   group_by(ancestry, cirrhosis) %>%
   summarise(n = n()) %>%
   pivot_wider(names_from = "cirrhosis", values_from = "n") %>%
   kable(caption = "Cirrhosis status") %>%
   kable_styling(full_width = F)
 
-raw_phenos_anc %>% 
+all_phenos %>% 
   group_by(ancestry, esrd) %>%
   summarise(n = n()) %>%
   pivot_wider(names_from = "esrd", values_from = "n") %>%
   kable(caption = "ESRD status") %>%
   kable_styling(full_width = F)
 
-raw_phenos_anc %>%
+all_phenos %>% 
+  group_by(ancestry, pregnant) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "pregnant", values_from = "n") %>%
+  kable(caption = "Pregnant") %>%
+  kable_styling(full_width = F)
+
+all_phenos %>% 
+  group_by(ancestry, cancer_within_1yearac) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = "cancer_within_1yearac", values_from = "n") %>%
+  kable(caption = "Cancer status (within one year prior to baseline)") %>%
+  kable_styling(full_width = F)
+
+all_phenos %>%
   filter(!diabetes, !CHD, !cirrhosis, !esrd) %>%
-  group_by(ancestry, is.na(alt_adj)) %>%
+  group_by(ancestry) %>%
   summarise(n = n()) %>%
   kable(caption = "Sample sizes after exclusions") %>%
   kable_styling(full_width = F)
@@ -86,7 +107,17 @@ ukb_biomarker_fields <- c(
   urea = 30670, vitD = 30890 
 )
 
-biomarkers <- names(ukb_biomarker_fields)
+raw_biomarkers <- names(ukb_biomarker_fields)
+biomarkers <- paste0(ifelse(raw_biomarkers %in% c("apoB", "chol", "ldl"),
+                            paste0(raw_biomarkers, "_statinadj"),
+                            raw_biomarkers),
+                     "_log")
+# logged_biomarkers <- c(
+#   "alt", "alt", "ast", "hscrp", "cysC", "bilirubin_dir", "ggt", "lipA",
+#   "bilirubin_tot", "tg"
+# )
+# biomarkers <- ifelse(raw_biomarkers %in% logged_biomarkers,
+#                      paste0(raw_biomarkers, "_log"), raw_biomarkers)
 biomarkers_clean <- c(
   "Alanine aminotransferase", "Albumin", "Alkaline phosphatase", 
   "Apolipoprotein A", "Apolipoprotein B", "Aspartate aminotrasferase", 
@@ -119,7 +150,7 @@ metabolic <- c(
 analytical_ranges <- list(
   alt = c(3, 500), alb = c(15, 60), alp = c(5, 1500), apoA = c(0.4, 2.5), apoB = c(0.4, 2), 
   ast = c(3, 1000), hscrp = c(0.08, 80), Ca = c(1, 5), chol = c(0.5, 18), creatinine = c(0, 4420), 
-  cysC = c(0.1, 8), bilirubin_dir = c(0, 171), ggt = c(5, 1200), glu = c(0.6, 45), hba1c = c(0, 0), 
+  cysC = c(0.1, 8), bilirubin_dir = c(0, 171), ggt = c(5, 1200), glu = c(0.6, 45), hba1c = c(15, 184), 
   hdl = c(0.05, 4.65), igf1 = c(1.3, 195), ldl = c(0.26, 10.3), lipA = c(5.76, 189), oestradiol = c(73, 17621), 
   phos = c(0.32, 6.4), rheum_factor = c(10, 120), shbg = c(0.33, 233), tes = c(0.35, 55.52), 
   bilirubin_tot = c(0, 513), protein_tot = c(30, 120), tg = c(0.1, 11.3), urate = c(89, 1785), 
@@ -133,6 +164,7 @@ tibble(
   `UKB Field` = ukb_biomarker_fields,
   Metabolic = ifelse(metabolic, "Yes", "No")
 ) %>%
+  # mutate(`Log-transformed` = ifelse(Biomarker %in% logged_biomarkers, "Yes", "No")) %>%
   kable(caption = "Blood biomarkers measured in the UK Biobank") %>%
   kable_styling(full_width = F)
 ```
@@ -146,12 +178,12 @@ Following the approach of Wang et al. 2013 (modified to conduct the *entire* pro
 ### Raw biomarker distributions
 
 ```{r raw-distributions}
-for (bm in biomarkers) {
+for (bm in raw_biomarkers) {
   raw_hist <- ggplot(raw_phenos, aes_string(x=bm)) +
     geom_histogram() +
     geom_vline(xintercept=analytical_ranges[[bm]][1], linetype="dashed") +
     geom_vline(xintercept=analytical_ranges[[bm]][2], linetype="dashed") +
-    labs(x = biomarkers_short[match(bm, biomarkers)],
+    labs(x = biomarkers_short[match(bm, raw_biomarkers)],
          y = "Sample size")
   print(raw_hist)
 }
@@ -196,11 +228,11 @@ for (bm in biomarkers) {
 SD_vec <- 3:7
 
 # Test ALT
-alt_thresh_vec <- with(eur_phenos, mean(alt, na.rm=T) + SD_vec * sd(alt, na.rm=T))
+alt_thresh_vec <- with(eur_phenos, mean(alt_log, na.rm=T) + SD_vec * sd(alt_log, na.rm=T))
 alt_thresh_tbl <- tibble(`Threshold (# SDs)` = SD_vec, 
                      `# samples removed` = as.integer(NA))
 alt_thresh_plt <- eur_phenos %>%
-  ggplot(aes(x=alt)) +
+  ggplot(aes(x=alt_log)) +
   geom_histogram()
 for (i in 1:5) {
   color <- if (i == 3) "darkred" else "black"
@@ -218,11 +250,11 @@ kable(alt_thresh_tbl) %>%
   kable_styling(full_width=F)
 
 # Test TG
-tg_thresh_vec <- with(eur_phenos, mean(tg, na.rm=T) + SD_vec * sd(tg, na.rm=T))
+tg_thresh_vec <- with(eur_phenos, mean(tg_log, na.rm=T) + SD_vec * sd(tg_log, na.rm=T))
 tg_thresh_tbl <- tibble(`Threshold (# SDs)` = SD_vec, 
                      `# samples removed` = as.integer(NA))
 tg_thresh_plt <- eur_phenos %>%
-  ggplot(aes(x=tg)) +
+  ggplot(aes(x=tg_log)) +
   geom_histogram()
 for (i in 1:5) {
   color <- if (i == 3) "darkred" else "black"

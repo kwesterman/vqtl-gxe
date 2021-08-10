@@ -1,9 +1,14 @@
 #!/bin/bash
 
 
-biomarker=$1
+#$ -l h_vmem=15G
+#$ -l h_rt=24:00:00
 
-cd ~/kw/ukbb-vqtl/scripts
+#$ -cwd
+#$ -j y
+
+
+biomarker=$1
 
 METAL=../opt/generic-metal/metal
 
@@ -12,14 +17,14 @@ METAL=../opt/generic-metal/metal
 
 EWIS_DIR=../data/processed/ewis
 
-cat ${EWIS_DIR}/ewis_phenotype_list.txt | while read pheno; do 
+cat ${EWIS_DIR}/ewis_phenotype_list.txt | while read exp; do 
 
 # Create new temporary file with STDERR column
 for ancestry in EUR AFR EAS SAS; do
 	echo "SNP REF ALT BETA STDERR" > ${EWIS_DIR}/${biomarker}/${ancestry}.tmp
-	tail -n +2 ${EWIS_DIR}/${biomarker}/${pheno}_${ancestry} \
+	tail -n +2 ${EWIS_DIR}/${biomarker}/${exp}_${ancestry} \
 	| grep -v nan \
-	| awk '{print $1,$4,$5,$10,sqrt($11)}'  \
+	| awk '{print $1,$4,$5,$11,sqrt($13)}'  \
 	>> ${EWIS_DIR}/${biomarker}/${ancestry}.tmp
 done
 
@@ -36,7 +41,7 @@ PROCESS ${EWIS_DIR}/${biomarker}/AFR.tmp
 PROCESS ${EWIS_DIR}/${biomarker}/EAS.tmp
 PROCESS ${EWIS_DIR}/${biomarker}/SAS.tmp
 
-OUTFILE ${EWIS_DIR}/${biomarker}/${biomarker}_${pheno}_MA_ .tbl
+OUTFILE ${EWIS_DIR}/${biomarker}/${biomarker}_${exp}_MA_ .tbl
 ANALYZE HETEROGENEITY
 
 QUIT

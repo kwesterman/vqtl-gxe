@@ -8,6 +8,8 @@ output/*
 *.RData
 *.rds
 *.Rhistory
+*.raw
+*dataset
 
 # Results (for now)
 results/*

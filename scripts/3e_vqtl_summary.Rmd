@@ -17,9 +17,10 @@ suppressMessages(silent <- lapply(
 
 ```{r biomarkers, cache=2}
 biomarkers <- c(
-  "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
-  "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
-  "bilirubin_tot", "tg", "urea"
+  "alt_log", "alb_log", "alp_log", "apoA_log", "apoB_statinadj_log", "ast_log", 
+  "hscrp_log", "chol_statinadj_log", "creatinine_log", "cysC_log", 
+  "bilirubin_dir_log", "ggt_log", "glu_log", "hba1c_log", "hdl_log", 
+  "ldl_statinadj_log", "lipA_log", "bilirubin_tot_log", "tg_log", "urea_log"
 )
 biomarkers_pretty <- c(
   "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
@@ -27,7 +28,7 @@ biomarkers_pretty <- c(
   "Bilirubin-Tot", "TG", "Urea"
 )
 
-n_eff <- 11.6
+n_eff <- 11.1
 bonferroni <- 5e-8 / n_eff
 ```
 
@@ -117,7 +118,7 @@ prune_chromosome <- function(chr_df, pval_col, locus_width) {
   pruned_df
 }
 
-prune_variants <- function(ss_df, pval_col, thresh=5e-8, locus_width=500000) {
+prune_variants <- function(ss_df, pval_col, thresh=5e-8, locus_width=1000000) {
   # Prune variants across all chromosomes using a simple distance-based approach
   if (min(ss_df[[pval_col]], na.rm=T) > thresh) return(tibble())
   ss_df %>%
@@ -591,7 +592,7 @@ anc_overlap_tbl %>%
 
 An additional vQTL analysis was conducted for BMI in the European group for the purposes of comparison with the results from Wang et al. Though there are small differences in the preprocessing steps used, we would expect that our results would match fairly closely.
 
-```{r bmi-comparison, out.width="55%"}
+```{r bmi-comparison, out.width="55%", eval=F}
 bmi_vqtl_df <- fread("../data/processed/vqtl_ss/bmi_EUR_vqtl_merged_nom",
                      data.table=F, stringsAsFactors=F)
 bmi_pruned <- prune_variants(bmi_vqtl_df, "P", 2e-9)
@@ -662,15 +663,15 @@ bmi_p1
 ## Onto the EWIS
 
 ```{r vqtl-selection}
-vqtl_var_df <- bind_rows(
+vqtl_df <- bind_rows(
   map(pruned_vqtl_ss, bind_rows, .id="ancestry"), .id="bm"
 ) %>%
-  select(index_var, CHR, POS, REF, ALT, bm, ancestry, P)
+  select(index_var, CHR, POS, REF, ALT, bm, ancestry, BETA, P)
 
-vqtl_var_df %>%
+vqtl_df %>%
   write_csv("../data/processed/ewis/ewis_variant_data.csv")
 
-vqtl_var_df %>%
+vqtl_df %>%
   arrange(as.numeric(CHR), as.numeric(POS)) %>%
   mutate(CHR = str_pad(CHR, 2, pad="0"),
          chr_pos = paste(CHR, POS, sep=":")) %>%
@@ -679,7 +680,7 @@ vqtl_var_df %>%
   write_csv("../data/processed/ewis/ewis_variants.txt", col_names=F)
 ```
 
-The `r nrow(distinct(filter(vqtl_var_df, ancestry == "MA", P < bonferroni), index_var))` variants (`r nrow(filter(vqtl_var_df, ancestry == "MA", P < bonferroni))` variant-biomarker pairs) passing a multiple testing-corrected genome-wide threshold (p = `r signif(bonferroni, 2)`) will be taken forward for the formal analysis. However, all `r nrow(distinct(filter(vqtl_var_df, P < bonferroni), index_var))` index variants passing 5e-8 in the meta-analysis or any ancestry-specific analysis will be tested to have these results available.
+The `r nrow(distinct(filter(vqtl_df, ancestry == "MA", P < bonferroni), index_var))` variants (`r nrow(filter(vqtl_df, ancestry == "MA", P < bonferroni))` variant-biomarker pairs) passing a multiple testing-corrected genome-wide threshold (p = `r signif(bonferroni, 2)`) will be taken forward for the formal analysis. However, all `r nrow(distinct(filter(vqtl_df, P < bonferroni), index_var))` index variants passing 5e-8 in the meta-analysis or any ancestry-specific analysis will be tested to have these results available.
 
 ## Biomarker distributions (for reference)
 

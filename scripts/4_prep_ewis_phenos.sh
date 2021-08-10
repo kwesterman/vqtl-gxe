@@ -1,9 +1,13 @@
-## Note: R phenotype processing portion requires ~100GB memory
+#$ -l h_vmem=100G
+#$ -l h_rt=24:00:00
+
+#$ -cwd
+#$ -j y
+
 
 source /broad/software/scripts/useuse
 use .r-3.6.0
 
-cd ~/kw/ukbb-vqtl/scripts
 
 R --vanilla <<EOF
 library(data.table)
@@ -85,7 +89,7 @@ library(data.table)
 library(tidyverse)
 
 ancestries <- c("EUR", "AFR", "EAS", "SAS") 
-biomarkers <- scan("../data/processed/30biomarkers.txt", what=character())
+biomarkers <- scan("../data/processed/metabolic_biomarkers.txt", what=character())
 
 phesant_phenos <- fread("../data/processed/phesant_phenos/ewis_phenotypes.1.tsv", data.table=F, stringsAsFactors=F)
 phesant_phenos <- phesant_phenos[, -which(duplicated(names(phesant_phenos)))]
@@ -100,7 +104,7 @@ for (anc in ancestries) {
 	fread(paste0("../data/processed/vqtl_phenos_", anc, ".csv")) %>%
 		select(id, all_of(biomarkers),
 			all_of(paste0(biomarkers, "_adj"))) %>%
-    		mutate_at(biomarkers, list(INT = INT)) %>%
+    		#mutate_at(biomarkers, list(INT = INT)) %>%
 		inner_join(phesant_phenos, by="id") %>%
 		write_csv(paste0("../data/processed/ewis/ewis_phenos_", anc, ".csv"))
 }

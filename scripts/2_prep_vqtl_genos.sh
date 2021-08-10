@@ -14,10 +14,10 @@ source /broad/software/scripts/useuse
 
 cd kw/ukbb-vqtl/scripts
 
-samplefile=/humgen/diabetes/UKBB_app27892/ukb27892_imp_chrAUT_v3_s487395.sample
+samplefile=/humgen/florezlab/UKBB_app27892/ukb27892_imp_chrAUT_v3_s487395.sample
 if [ chr = "X" ]
 then
-	samplefile=/humgen/diabetes/UKBB_app27892/ukb27892_imp_chrX_v3_s486743.sample
+	samplefile=/humgen/florezlab/UKBB_app27892/ukb27892_imp_chrX_v3_s486743.sample
 fi
 
 # Generate list of variants w/ MAF > 0.05 in full sample

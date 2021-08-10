@@ -1,6 +1,7 @@
 #!/bin/sh
 
 
+#$ -cwd
 #$ -j y
 
 
@@ -12,7 +13,6 @@ ancestry=EUR
 source /broad/software/scripts/useuse
 use Anaconda3
 
-cd ~/kw/ukbb-vqtl/scripts
 vqtl_dir=../data/processed/vqtl_ss
 me_dir=../data/processed/main_effect_ss
 source activate ldsc

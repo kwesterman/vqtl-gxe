@@ -1,13 +1,16 @@
 #!/bin/sh
 
 
-#$ -l h_vmem=20G
+#$ -l h_vmem=22G
 #$ -l h_rt=28:00:00
-#$ -j y
 
 #$ -pe smp 6
 #$ -binding linear:6
 #$ -R y
+
+#$ -cwd
+#$ -j y
+
 
 pheno=$1
 ancestry=$2

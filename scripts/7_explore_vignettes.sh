@@ -12,13 +12,13 @@ raw_phenofile=$6  # Ex. ukb10528.tab
 #$ -l os=RedHat7
 #$ -l h_vmem=20G
 #$ -l h_rt=1:00:00
+
+#$ -cwd
 #$ -j y
 
 
 source /broad/software/scripts/useuse
 use .r-3.6.0
-
-cd kw/ukbb-vqtl/scripts
 
 plink2=../../opt/plink2
 osca=../../opt/osca_Linux

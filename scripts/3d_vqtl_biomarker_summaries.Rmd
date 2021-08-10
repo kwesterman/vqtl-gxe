@@ -19,9 +19,9 @@ suppressMessages(silent <- lapply(
 
 ```{r biomarkers}
 biomarkers <- c(
-  "alt", "alb", "alp", "apoA", "apoB", "ast", "hscrp", "chol", "creatinine",
-  "cysC", "bilirubin_dir", "ggt", "glu", "hba1c", "hdl", "ldl", "lipA",
-  "bilirubin_tot", "tg", "urea"
+  "alt_log", "alb", "alp_log", "apoA", "apoB", "ast_log", "hscrp_log", "chol", "creatinine",
+  "cysC_log", "bilirubin_dir_log", "ggt_log", "glu", "hba1c", "hdl", "ldl", "lipA_log",
+  "bilirubin_tot_log", "tg_log", "urea"
 )
 biomarkers_pretty <- c(
   "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
@@ -38,21 +38,26 @@ all_biomarkers <- c(biomarkers, nonCM_biomarkers)
 ```{r load-data}
 # No INFO filter needed here due to prior INFO filtering in postprocessing script
 
-vqtl_list <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+bim_df <- fread("../data/processed/all_chr.bim",
+                col.names=c("CHR", "SNP", "CM", "POS", "ALT", "REF")) %>%
+  select(SNP, CHR, POS)
+
+vqtl_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
   fread(paste0("../data/processed/vqtl_ss/metal/", bm, "_MA_1.tbl_nom"),
         stringsAsFactors=F, data.table=F) %>%
-    select(SNP, P, Dir, ISq, HetP) %>%
-    separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+    select(SNP, REF, ALT, P, Dir, ISq, HetP) %>%
+    inner_join(bim_df, by="SNP") %>%
+    mutate_at(vars(ALT, REF), toupper) %>%
+    mutate(CHR=as.character(CHR))
 })
-names(vqtl_list) <- all_biomarkers
 
-me_list <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+me_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
   fread(paste0("../data/processed/main_effect_ss/metal/", bm, "_MA_1.tbl_nom"),
         stringsAsFactors=F, data.table=F) %>%
     select(SNP, P, Dir, ISq, HetP) %>%
-    separate(SNP, c("CHR", "POS", "ALT", "REF"), sep="[:_]", remove=F)  ## CLARIFY/CONFIRM THE ALLELES FURTHER
+    inner_join(bim_df, by="SNP") %>%
+    mutate(CHR=as.character(CHR))
 })
-names(me_list) <- all_biomarkers
 ```
 
 ```{r prep-funcs}
@@ -251,11 +256,11 @@ eur_ME_QQs <- lapply(setNames(biomarkers, biomarkers), function(bm) {
 ```
 
 ```{r manhattan-plots}
-vqtl_mh_plts <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+vqtl_mh_plts <- lapply(setNames(biomarkers, biomarkers), function(bm) {
   make_manhattan(vqtl_list[[bm]], "P")
 })
 
-me_mh_plts <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+me_mh_plts <- lapply(setNames(biomarkers, biomarkers), function(bm) {
   make_manhattan(me_list[[bm]], "P")
 })
 ```
@@ -289,7 +294,7 @@ prune_variants <- function(ss_df, pval_col, thresh=5e-8, locus_width=500000) {
 pruned_vqtl_ss <- lapply(vqtl_list, prune_variants, "P")
 pruned_me_ss <- lapply(me_list, prune_variants, "P")
 # pruned_me_ss <- lapply(1:length(me_list), function(a) {
-#   print(all_biomarkers[a])
+#   print(biomarkers[a])
 #   prune_variants(me_list[[a]], "P")
 # })
 ```
@@ -320,7 +325,7 @@ find_overlaps <- function(df, pval_col, locus_width) {
   group_df
 }
 
-vqtl_me_overlaps <- lapply(setNames(all_biomarkers, all_biomarkers), function(bm) {
+vqtl_me_overlaps <- lapply(setNames(biomarkers, biomarkers), function(bm) {
   vqtl_me_concat <- bind_rows(
     list(vqtl=pruned_vqtl_ss[[bm]], me=pruned_me_ss[[bm]]),
     .id="source"
@@ -379,7 +384,7 @@ gc_lambdas <- c(
 #         caption=paste0("Index variants from analysis of ", bm))
 # }
 
-for (b in all_biomarkers) {
+for (b in biomarkers) {
   qq <- grid::rasterGrob(magick::image_read_pdf(
     paste0("../data/processed/vqtl_ss/qq_plots/", b, "_MA_1_QQ.pdf")
   ), interpolate=T)
