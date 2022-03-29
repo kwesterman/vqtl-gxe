@@ -3,6 +3,8 @@
 
 #$ -l h_vmem=70G
 #$ -l h_rt=20:00:00
+
+#$ -cwd
 #$ -j y
 
 chr=$1
@@ -12,7 +14,7 @@ plink2=../../opt/plink2
 
 source /broad/software/scripts/useuse
 
-cd kw/ukbb-vqtl/scripts
+mkdir -p ${dir}
 
 samplefile=/humgen/florezlab/UKBB_app27892/ukb27892_imp_chrAUT_v3_s487395.sample
 if [ chr = "X" ]
@@ -20,7 +22,7 @@ then
 	samplefile=/humgen/florezlab/UKBB_app27892/ukb27892_imp_chrX_v3_s486743.sample
 fi
 
-# Generate list of variants w/ MAF > 0.05 in full sample
+# Generate list of variants w/ MAF > 0.005 in full sample
 awk '$6 > 0.005 {print $2}' ${ukb_dir}/ukb_mfi_chr${chr}_v3.txt > ${dir}/maf005_variants_chr${chr}.txt
 
 # Read in UKB .bgen file and convert to pgen/pvar/psam fileset

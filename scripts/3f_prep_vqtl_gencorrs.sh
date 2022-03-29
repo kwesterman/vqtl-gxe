@@ -2,7 +2,7 @@
 
 
 #$ -l h_vmem=15G
-#$ -l h_rt=24:00:00
+#$ -l h_rt=2:00:00
 #$ -cwd
 #$ -j y
 
@@ -69,6 +69,7 @@ EOF
 	--p P \
 	--frq freq \
 	--signed-sumstats BETA,0 \
+	--chunksize 500000 \
 	--out ${vqtl_dir}/ldsc/${bm}_${ancestry}_ldsc
 
 # Munge sumstats for main effect
@@ -81,4 +82,5 @@ EOF
 	--a2 A2 \
 	--p P \
 	--signed-sumstats BETA,0 \
+	--chunksize 500000 \
 	--out ${me_dir}/ldsc/${bm}_${ancestry}_ldsc

@@ -96,7 +96,7 @@ me_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
 #   )
 # }
 
-make_manhattan <- function(data, pval_col, chr_col="CHR", pos_col="POS", 
+make_manhattan <- function(data, pval_col, chr_col="CHR", pos_col="POS",
                            ylims=NULL, main="") {
 
   mh_data <- data %>%

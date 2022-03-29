@@ -680,6 +680,24 @@ vqtl_df %>%
   write_csv("../data/processed/ewis/ewis_variants.txt", col_names=F)
 ```
 
+```{r me-selection}
+me_df <- bind_rows(
+  map(pruned_me_ss, bind_rows, .id="ancestry"), .id="bm"
+) %>%
+  select(index_var, CHR, POS, REF, ALT, bm, ancestry, BETA, P)
+
+me_df %>%
+  write_csv("../data/processed/ewis/ME_variant_data.csv")
+
+me_df %>%
+  arrange(as.numeric(CHR), as.numeric(POS)) %>%
+  mutate(CHR = str_pad(CHR, 2, pad="0"),
+         chr_pos = paste(CHR, POS, sep=":")) %>%
+  distinct(chr_pos) %>% 
+  select(chr_pos) %>%
+  write_csv("../data/processed/ewis/ME_variants.txt", col_names=F)
+```
+
 The `r nrow(distinct(filter(vqtl_df, ancestry == "MA", P < bonferroni), index_var))` variants (`r nrow(filter(vqtl_df, ancestry == "MA", P < bonferroni))` variant-biomarker pairs) passing a multiple testing-corrected genome-wide threshold (p = `r signif(bonferroni, 2)`) will be taken forward for the formal analysis. However, all `r nrow(distinct(filter(vqtl_df, P < bonferroni), index_var))` index variants passing 5e-8 in the meta-analysis or any ancestry-specific analysis will be tested to have these results available.
 
 ## Biomarker distributions (for reference)

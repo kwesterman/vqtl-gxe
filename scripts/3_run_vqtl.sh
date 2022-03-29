@@ -38,7 +38,7 @@ EOF
 #awk '{print $2}' ${genodir}/chr${chr}.bim | sort | uniq > ${genodir}/chr${chr}_unique_snps.txt
 
 bfile=${genodir}/chr${chr}_${ancestry}
-if [ ${ancestry} == "EUR" ]
+if [ ${ancestry} == "EUR" ] || [ ${ancestry} == "all" ]
 then
         bfile=${genodir}/chr${chr}
 fi

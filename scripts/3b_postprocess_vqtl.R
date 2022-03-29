@@ -47,7 +47,9 @@ filepath <- args[1]
 metal_cols <- c(
   SNP="MarkerName",
   ALT="Allele1", REF="Allele2",
-  BETA="Effect", SE="StdErr", P="P-value",
+  #BETA="Effect", SE="StdErr", 
+  P="P-value",
+  z="Zscore",
   Dir="Direction", ISq="HetISq", HetP="HetPVal"
 )
 vqtl_cols <- c(

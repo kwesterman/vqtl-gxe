@@ -3,7 +3,7 @@ OUTPUTDIR=../data/processed/vqtl_ss/annovar
 TARGETDIR=../data/processed/vqtl_ss/annovar
 
 perl $ANNOVARDIR/annotate_variation.pl \
-        -out $OUTPUTDIR/vqtl_MA_hits \
+        -out $OUTPUTDIR/vqtl_variants \
         -build hg19 \
-        $TARGETDIR/vqtl_MA_hits.avinput \
+        $TARGETDIR/vqtl_variants.avinput \
         $ANNOVARDIR/humandb/

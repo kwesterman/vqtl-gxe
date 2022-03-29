@@ -1,0 +1,360 @@
+---
+title: "ukbb_vqtl_nmr_tg_overview_20210908"
+author: "Tim Majarian"
+date: "9/8/2021"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+\newpage
+\tableofcontents
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(ggsci)
+library(pgenlibr)
+
+```
+
+# Resources
+
+## QC flag information
+https://biobank.ndph.ox.ac.uk/showcase/ukb/docs/nmrm_app4.pdf  
+Values with QC flag equal to 1, 3, or 9 were removed.  
+Sample preparation and assay information is still pending with UKBB. We should probably explore adjusting for these when the fields get approved for our application.
+
+## QC flag coding
+Coding	Meaning  
+**1	Below limit of quantification**  
+2	Citrate plasma  
+**3	Degraded sample**  
+4	High ethanol  
+5	Isopropyl alcohol  
+6	Low glutamine or high glutamate  
+7	Medium ethanol  
+8	Polysaccharides  
+**9	Unknown contamination**  
+10	Ethanol  
+
+## TG Fields
+23407	Total Triglycerides
+23408	Triglycerides in VLDL
+23409	Triglycerides in LDL
+23410	Triglycerides in HDL
+23487	Triglycerides in Chylomicrons and Extremely Large VLDL
+23494	Triglycerides in Very Large VLDL
+23501	Triglycerides in Large VLDL
+23508	Triglycerides in Medium VLDL
+23515	Triglycerides in Small VLDL
+23522	Triglycerides in Very Small VLDL
+23529	Triglycerides in IDL
+23536	Triglycerides in Large LDL
+23543	Triglycerides in Medium LDL
+23550	Triglycerides in Small LDL
+23557	Triglycerides in Very Large HDL
+23564	Triglycerides in Large HDL
+23571	Triglycerides in Medium HDL
+23578	Triglycerides in Small HDL
+23787	Triglycerides in Chylomicrons and Extremely Large VLDL, QC Flag
+23794	Triglycerides in Very Large VLDL, QC Flag
+23801	Triglycerides in Large VLDL, QC Flag
+23808	Triglycerides in Medium VLDL, QC Flag
+23843	Triglycerides in Medium LDL, QC Flag
+23850	Triglycerides in Small LDL, QC Flag
+23857	Triglycerides in Very Large HDL, QC Flag
+23864	Triglycerides in Large HDL, QC Flag
+23871	Triglycerides in Medium HDL, QC Flag
+23878	Triglycerides in Small HDL, QC Flag
+
+## Process Fields
+FieldID	Field
+23649	Shipment Plate
+23650	Spectrometer
+23651	Measurement Quality Flagged
+23652	High Lactate
+23653	High Pyruvate
+23654	Low Glucose
+23655	Low Protein
+
+```{r, include = F}
+# Fields to include
+## Still don't have the process fields
+tg_fields <- c(23407, 23487,23787,23410,23529,23564,23864,23536,23501,23801,23409,23571,23871,23543,23843,23508,23808,23578,23878,23550,23850,23515,23557,23857,23494,23794,23522,23408,23435,23735,23583,23883,23613,23638,23938,23618,23593,23893,23643,23943,23623,23923,23598,23898,23648,23948,23628,23928,23603,23633, 23933, 23588, 23888, 23608)
+tg_baseline_fields <- paste0("f.", tg_fields, ".0.0")
+process_fields <- paste0("f.", c("23650", "23649", "23651", "23652", "23653", "23654", "23655"), ".0.0")
+
+# qc field mapping
+qc_map <- c(
+  'f.23487.0.0' = 'f.23787.0.0',
+  'f.23494.0.0' = 'f.23794.0.0',
+  'f.23501.0.0' = 'f.23801.0.0',
+  'f.23508.0.0' = 'f.23808.0.0',
+  'f.23543.0.0' = 'f.23843.0.0',
+  'f.23550.0.0' = 'f.23850.0.0',
+  'f.23557.0.0' = 'f.23857.0.0',
+  'f.23564.0.0' = 'f.23864.0.0',
+  'f.23571.0.0' = 'f.23871.0.0',
+  'f.23578.0.0' = 'f.23878.0.0'
+)
+
+plot_fields <- c("f.23407.0.0", "f.23408.0.0", "f.23409.0.0", "f.23410.0.0", 
+"f.23487.0.0", "f.23494.0.0", "f.23501.0.0", "f.23508.0.0", "f.23515.0.0", 
+"f.23522.0.0", "f.23529.0.0", "f.23536.0.0", "f.23543.0.0", "f.23550.0.0", 
+"f.23557.0.0", "f.23564.0.0", "f.23571.0.0", "f.23578.0.0")
+plot_adj_fields <- paste0(plot_fields, "_adj")
+
+# input files
+dd.file <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/data/Data_Dictionary_Showcase_downloaded_20210908.csv"
+data.dir <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/data/vqtl/"
+res.dir <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/results/vqtl/"
+phe.file <- paste0(data.dir, "vqtl_phenos_EUR.csv")
+exp.file <- paste0(data.dir, "ewis_phenos_EUR.csv")
+var_info.file <- paste0(data.dir, "variable_info")
+pc.file <- paste0(data.dir, "ewis_phenos_EUR_PCA")
+whr.file <- paste0(data.dir, "EUR_sexstrat_WHRadjBMI_INT.txt")
+nmr.file <- paste0(data.dir, "ukb48298.tab.gz")
+tg_snps.file <- paste0(data.dir, "tg_anthro_vignette_variants.txt")
+pvar.file <- paste0(data.dir, "ewis_genotypes.pvar")
+pgen.file <- paste0(data.dir, "ewis_genotypes.pgen")
+psam.file <- paste0(data.dir, "ewis_genotypes.psam")
+bmi_ss.file <- paste0(data.dir, "21001_EUR")
+
+# output files
+res.file <- paste0(res.dir, "ukbb_vqtl_tg_gxe_lmresults_20210908.csv")
+
+# Load data
+dd.df <- dd.file  %>%
+  fread(data.table = F, stringsAsFactors = F)
+dd <- dd.df %>%
+  filter(FieldID %in% tg_fields)
+non_qc_fields <- dd %>% 
+  select(Field, FieldID) %>%
+  filter(!grepl("QC", Field))
+phe.df <- phe.file %>%
+  fread(data.table = F, stringsAsFactors = F)#, nrows = 10000)
+exp.df <- exp.file %>%
+  fread(data.table = F, stringsAsFactors = F)#, nrows = 10000)
+var_info.df <- var_info.file %>%
+  fread(data.table = F, stringsAsFactors = F)
+pc.df <- pc.file %>%
+  fread(data.table = F, stringsAsFactors = F) %>%
+  select(id, PC1, PC2) %>%
+  rename(anthro_PC1 = PC1, anthro_PC2 = PC2)
+whr.df <- whr.file %>%
+  fread(data.table = F, stringsAsFactors = F)
+nmr.df <- nmr.file %>%
+  fread(data.table = F, stringsAsFactors = F)#, nrows = 10000)
+
+# filter to anthro fields
+anthro <- subset(var_info.df, var_info.df$Category_Level_3=="Anthropometry")
+exp.df = exp.df[,(names(exp.df) %in% c("id",anthro$FieldID))]
+
+# load genetics 
+tg_snps.df <- tg_snps.file %>%
+  fread(data.table = F, stringsAsFactors = F, header = F)
+pvar.df <- pvar.file %>%
+  fread(data.table = F, stringsAsFactors = F)
+var_ids <- match(tg_snps.df$V1, pvar.df$ID)
+
+psam.df <- psam.file %>%
+  fread(data.table = F, stringsAsFactors = F)
+pvar <- pgenlibr::NewPvar(pvar.file)
+pgen <- pgenlibr::NewPgen(pgen.file, pvar=pvar) #,sample_subset = c(1,2,3,4) )
+tg_genotypes.df <- ReadList(pgen, var_ids, meanimpute=F)
+
+geno.df <- cbind(psam.df, data.frame(tg_genotypes.df)) %>%
+  select(-`#FID`, -SEX)
+colnames(geno.df)[2:10] <- tg_snps.df$V1
+
+bmi_ss.df <- bmi_ss.file %>% 
+  fread(data.table = F, stringsAsFactors = F) %>%
+  filter(SNPID %in% tg_snps.df$V1) %>%
+  select(SNPID, Non_Effect_Allele, Effect_Allele, `Beta_G-e`, `Var_Beta_G-e`) %>%
+  group_by(SNPID) %>%
+  mutate(pos_effect_allele = ifelse(`Beta_G-e` > 0, Effect_Allele, Non_Effect_Allele),
+         pos_beta_ge = abs(`Beta_G-e`))
+
+# subset nmr data
+nmr_baseline.df <- nmr.df[, c(1, which(names(nmr.df) %in% c(tg_baseline_fields,process_fields)))]
+
+# remove values where QC field is either 1 3 or 9
+for (qi in 1:length(qc_map)){
+  qc_field <- as.character(qc_map[qi])
+  field <- names(qc_map[qi])
+  if (field == 'f.23557.0.0') next
+  to_remove <- which(nmr_baseline.df[[qc_field]] %in% c(1,3,9))
+  nmr_baseline.df[to_remove, field] <- NA
+}
+
+# generate inv norm
+for (f in names(nmr_baseline.df)){
+  field_id <- unlist(strsplit(f, "\\."))[2]
+  if (field_id %in% non_qc_fields$FieldID){
+    nmr_baseline.df[!is.na(nmr_baseline.df[,f]), paste0(f, "_adj")] <- RNOmni::RankNorm(nmr_baseline.df[!is.na(nmr_baseline.df[,f]),f])  
+  }
+}
+
+# merge it all together
+data.df <- merge(phe.df, exp.df, by = "id") %>%
+  merge(pc.df, by = 'id') %>%
+  merge(whr.df, by.x = 'id', by.y = 'f.eid') %>%
+  merge(nmr_baseline.df, by.x = 'id', by.y = 'f.eid') %>%
+  merge(geno.df, by.x = 'id', by.y = 'IID')
+
+nmr_baseline.df <- nmr_baseline.df %>%
+  filter(f.eid %in% !!data.df$id)
+
+fwrite(data.df, file = paste0(res.dir, "ukbb_vqtl_tg_gxe_inputdata_20210908.csv"), sep = ",")
+
+```
+
+
+```{r, include = F}
+
+stats.df <- list()
+for (f in names(nmr_baseline.df)){
+  if ((f == 'f.eid') | (endsWith(f, "adj"))){
+    next
+  } else {
+    field_id <- unlist(strsplit(f, "\\."))[2]
+    field_name <- dd[dd$FieldID == field_id, "Field"]  
+  }
+  
+  if (field_id %in% non_qc_fields$FieldID){
+    stats.df[[f]] <- data.frame(
+      field = field_name,
+      n = sum(!is.na(nmr_baseline.df[[f]])),
+      mean = mean(nmr_baseline.df[[f]], na.rm = T),
+      min = min(nmr_baseline.df[[f]], na.rm = T),
+      max = max(nmr_baseline.df[[f]], na.rm = T),
+      std = sd(nmr_baseline.df[[f]], na.rm = T)
+    )
+  }
+  
+}
+
+stats.df <- do.call(rbind, stats.df)
+
+
+```
+
+\newpage
+# Raw field overview
+
+```{r, echo = F}
+
+knitr::kable(stats.df, digits=3, row.names = F)
+
+```
+
+\newpage
+# Raw field distributions
+
+```{r, fig.show="hold", out.width="50%", echo = F, message=FALSE}
+cols <- rep(ggsci::pal_jco()(6),3)
+ci <- 1
+for (fi in 1:length(plot_fields)){
+  f <- plot_fields[fi]
+  field_id <- unlist(strsplit(f, "\\."))[2]
+  field_name <- dd[dd$FieldID == field_id, "Field"]
+  plt <- ggdensity(nmr_baseline.df, x = f, title = field_name, fill = cols[ci])
+  ci <- ci +1
+  suppressWarnings(print(plt))
+}
+
+
+```
+
+\newpage
+# Inv norm field distributions
+
+```{r, fig.show="hold", out.width="50%", echo = F, message=FALSE}
+cols <- rep(ggsci::pal_jco()(6),3)
+ci <- 1
+for (fi in 1:length(plot_adj_fields)){
+  f <- plot_adj_fields[fi]
+  field_id <- unlist(strsplit(f, "\\."))[2]
+  field_name <- dd[dd$FieldID == field_id, "Field"]
+  
+  plt <- ggdensity(nmr_baseline.df, x = f, title = paste(field_name, "(norm)"), fill = cols[ci])
+  ci <- ci +1
+  suppressWarnings(print(plt))
+}
+
+
+```
+
+\newpage
+# Model
+
+lm(metab ~ snp*exposure + sex + age + PC1-10)
+
+```{r,  include=F}
+
+
+
+# #interaction model I used in WGHS (note that it does not include sex in an all-women study, but should for UKB;
+# exposures <- c("bmi","anthro_PC1", "anthro_PC2")
+exposures <- c("anthro_PC1", "anthro_PC2", "WHRadjBMI_INT", names(exp.df)[-1])
+# exposures <- names(exp.df)[-1]
+
+
+final_df <- list()
+for (snpi in 1:nrow(tg_snps.df)){
+  snp <- tg_snps.df$V1[snpi]
+  for (exposure in exposures){
+    if (exposure %in% dd.df$FieldID){
+      exposure_name <- dd.df[dd.df$FieldID == exposure, "Field"]
+    } else {
+      exposure_name <- exposure
+    }
+    for (metab in plot_adj_fields){
+      metab_name <- dd.df[dd.df$FieldID == unlist(strsplit(metab, "\\."))[2], "Field"]
+      fit <- lm(data.df[,metab] ~ data.df[,snp]*data.df[,exposure] + sex + age + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + f.23649.0.0 + f.23650.0.0, data=data.df, na.action=na.exclude)
+      res <- data.frame(summary(fit)$coefficients)
+      final_df[[length(final_df)+1]] <- data.frame(
+        outcome = metab_name,
+        snp = snp,
+        effect_allele = pvar.df[var_ids[snpi],"ALT"],
+        exposure = exposure_name,
+        snp_beta = res[2,1],
+        snp_se = res[2,2],
+        snp_p = res[2,4],
+        exposure_beta = res[3,1],
+        exposure_se = res[3,2],
+        exposure_p = res[3,4],
+        gxe_beta = res[nrow(res),1],
+        gxe_se = res[nrow(res),2],
+        gxe_p = res[nrow(res),4],
+        stringsAsFactors = F
+      )
+      if (final_df[[length(final_df)]]$effect_allele != bmi_ss.df[bmi_ss.df$SNPID == snp, 'pos_effect_allele']){
+        final_df[[length(final_df)]]$effect_allele <- bmi_ss.df[bmi_ss.df$SNPID == snp, 'pos_effect_allele']
+        final_df[[length(final_df)]]$snp_beta <- -final_df[[length(final_df)]]$snp_beta
+        final_df[[length(final_df)]]$gxe_beta <- -final_df[[length(final_df)]]$gxe_beta
+      }
+
+      # snprow=data.frame(as.list(summary(fit)$coefficients[c(2),c(1,2,4)]))
+      # exprow=data.frame(as.list(summary(fit)$coefficients[c(3),c(1,2,4)]))
+      # gxerow=data.frame(as.list(summary(fit)$coefficients[c(16),c(1,2,4)]))
+      # cbind(metab, snp, exposure, snprow, exprow, gxerow)
+    }
+  }
+}
+
+final.df <- do.call(rbind, final_df)
+fwrite(final.df, file = res.file, sep = ",")
+
+```
+
+
+```{r, echo = F}
+print(paste("Model outputs written to:", res.file))
+
+```

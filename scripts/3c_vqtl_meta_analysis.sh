@@ -23,9 +23,10 @@ mkdir -p ${VQTL_DIR}
 echo "Performing vQTL meta-analysis for ${biomarker}..."
 
 echo """
-SCHEME STDERR
+SCHEME SAMPLESIZE
 MARKER SNP 
-ALLELE A2 A1 
+ALLELE A1 A2
+WEIGHT NMISS
 EFFECT beta 
 STDERR se
 PVALUE P 
@@ -62,7 +63,7 @@ echo "Performing main-effect meta-analysis for ${biomarker}..."
 echo """
 SCHEME STDERR
 MARKER ID 
-ALLELE REF ALT
+ALLELE ALT REF
 EFFECT BETA 
 STDERR SE
 PVALUE P 

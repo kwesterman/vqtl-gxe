@@ -1,0 +1,128 @@
+---
+title: "ukbb_vqtl_nmr_plots_20211004"
+author: "Tim Majarian"
+date: "10/4/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(tidyverse)
+library(ggpubr)
+library(ggsci)
+library(patchwork)
+library(gridExtra)
+```
+
+```{r}
+kplot <- function(df, outcome, snp, exposure, outcome_label, nbin = 3){
+  df <- df[!is.na(df[[snp]]) & !is.na(df[[outcome]]) & !is.na(df[[exposure]]),]
+  # df[,'exposure_bin'] <- cut(df[[exposure]], nbin, right = FALSE)
+  df[,'exposure_bin'] <- cut(df[[exposure]], quantile(df[[exposure]], seq(0, 1, length.out=4)), right = FALSE)
+  
+  df[[snp]] <- round(df[[snp]])
+  
+  bins <- levels(df$exposure_bin)
+  df1 <- df %>% filter(exposure_bin == bins[1])
+  df2 <- df %>% filter(exposure_bin == bins[2])
+  df3 <- df %>% filter(exposure_bin == bins[3])
+  fit1 <- lm(df1[[outcome]] ~ df1[[snp]], data = df1)
+  fit2 <- lm(df2[[outcome]] ~ df2[[snp]], data = df2)
+  fit3 <- lm(df3[[outcome]] ~ df3[[snp]], data = df3)
+  df[[exposure]] <- df$exposure_bin
+  
+  plt <- ggboxplot(df, x = snp, y = outcome, color = exposure, palette = viridisLite::viridis(3)[1:3], xlab = snp, ylab = outcome_label) +
+    theme_gray()
+  return(plt)
+}
+
+ktplot <- function(df_orig, outcome, snp, outcome_label, nbin = 3){
+  df_orig <- data.df; outcome <- f_id; snp <- res.df[pi,2]; nbin <- 3; outcome_label <- res.df[pi,1];
+  snp_map <- c("rs102275" = "rs102275 (FADS)", "rs139566989" = "rs139566989 (LIPC)", "1:63038303_TGG_T" = "1:63038303_TGG_T (ANGPTL3)")
+  
+  plots <- list()
+  for (exposure in c("bmi", "anthro_PC1", "anthro_PC2")){
+    df <- df_orig
+    df$cur_out <- df[[outcome]]
+    df$cur_snp <- df[[snp]]
+    df$cur_exp <- df[[exposure]]
+    
+    # df <- df %>%
+    #   filter(!is.na(cur_out), !is.na(cur_snp), !is.na(cur_exp)) %>%
+    #   mutate(cur_snp = factor(round(cur_snp)),
+    #          exposure_bin = cut(cur_exp, !!nbin, right = FALSE))
+    df <- df %>%
+      filter(!is.na(cur_out), !is.na(cur_snp), !is.na(cur_exp)) %>%
+      mutate(cur_snp = factor(round(cur_snp)))
+    df[,'exposure_bin'] <- cut(df[[exposure]], quantile(df[[exposure]], seq(0, 1, length.out=4)), right = F, include.lowest = T)
+    
+    df_plt <- df %>%
+      group_by(cur_snp, exposure_bin) %>%
+      summarise(mn = mean(cur_out),
+                conf1 = t.test(cur_out)$conf.int[1],
+                conf2 = t.test(cur_out)$conf.int[2]) %>%
+      distinct() %>%
+      ungroup()
+    
+    plt <- ggplot(df_plt) +
+      geom_point(aes(x = cur_snp, y = mn), size = 0, shape = 22, color = 'white') +
+      geom_boxplot(
+        aes(x = cur_snp, ymin = conf1, lower = mn, middle = mn, upper = mn, ymax = conf2, colour = exposure_bin),
+        stat = "identity",
+        shape = 2,
+        width = 0.15) +
+      theme_pubr() +
+      theme(legend.position = 'right') +
+      labs(color=exposure) +
+      xlab(as.character(snp_map[snp])) +
+      ylab(outcome_label) +
+      scale_color_jco() +
+      guides(guide_legend(exposure, override.aes = list(shape = 15)))
+    plots[[exposure]] <- plt
+  }
+  return(plots)
+  
+}
+
+
+
+
+```
+
+```{r, include = F}
+data.dir <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/data/vqtl/"
+res.dir <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/results/vqtl/"
+dd.file <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/data/Data_Dictionary_Showcase_downloaded_20210908.csv"
+res.file <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/results/vqtl/ukbb_vqtl_tg_gxe_lmresults_bmipc_20210908.csv"
+data.file <- "/Users/tmajaria/Documents/projects/biobanks/ukbb/results/vqtl/ukbb_vqtl_tg_gxe_inputdata_20210908.csv"
+
+dd <- dd.file  %>%
+  fread(data.table = F, stringsAsFactors = F)
+
+data.df <- data.file %>%
+  fread(data.table = F, stringsAsFactors = F)
+
+res.df <- res.file %>%
+  fread(data.table = F, stringsAsFactors = F) %>%
+  mutate(z_gxe = gxe_beta/gxe_se) %>%
+  filter(abs(z_gxe) > 1.96) %>%
+  select(outcome, snp) %>%
+  filter(snp %in% c("rs102275", "rs139566989", "1:63038303_TGG_T"))
+
+save.image(file = '/Users/tmajaria/Documents/projects/biobanks/ukbb/data/vqtl/ukbb_vqtl_nmr_plots_20211004.Rdata')
+
+```
+
+```{r, echo = F, fig.height = 8, fix.width = 8, message=FALSE, warning=FALSE}
+
+for (pi in 1:nrow(res.df)){
+  f_id <- paste0("f.", dd[dd$Field == res.df[pi,1], "FieldID"], ".0.0_adj")
+  # print(kplot(data.df, f_id, params[pi,2], params[pi,3], params[pi,1]))
+  plots <- ktplot(data.df, f_id, res.df[pi,2], res.df[pi,1])
+  print(grid.arrange(plots[[1]], plots[[2]], plots[[3]], ncol = 1))
+}
+
+
+
+```

@@ -15,23 +15,12 @@ biomarker=$1
 cd ~/kw/ukbb-vqtl/scripts
 
 
-# Concatenate chromosomes
-
-for anc in EUR AFR EAS SAS; do
-sumstats_root=../data/processed/sensitivity/${biomarker}
-head -1 ${sumstats_root}_chr1_${anc}_expAdj.vqtl > ${sumstats_root}_${anc}_expAdj_merged
-for chr in {1..22}; do
-	echo "Chromosome " ${chr}
-	tail -n +2 ${sumstats_root}_chr${chr}_${anc}_expAdj.vqtl >> ${sumstats_root}_${anc}_expAdj_merged
-done
-done
-
-
 # vQTL meta-analysis
 
 METAL=../opt/generic-metal/metal
 
 SENS_DIR=../data/processed/sensitivity
+mkdir -p ${SENS_DIR}/metal
 
 echo "Performing vQTL meta-analysis for ${biomarker}..."
 
@@ -47,10 +36,10 @@ ADDFILTER P != 0
 ADDFILTER freq > 0.01
 ADDFILTER freq < 0.99
 
-PROCESS ${SENS_DIR}/${biomarker}_EUR_expAdj_merged 
-PROCESS ${SENS_DIR}/${biomarker}_AFR_expAdj_merged 
-PROCESS ${SENS_DIR}/${biomarker}_EAS_expAdj_merged 
-PROCESS ${SENS_DIR}/${biomarker}_SAS_expAdj_merged 
+PROCESS ${SENS_DIR}/${biomarker}_EUR_expAdj.vqtl
+PROCESS ${SENS_DIR}/${biomarker}_AFR_expAdj.vqtl
+PROCESS ${SENS_DIR}/${biomarker}_EAS_expAdj.vqtl
+PROCESS ${SENS_DIR}/${biomarker}_SAS_expAdj.vqtl
 
 OUTFILE ${SENS_DIR}/metal/${biomarker}_expAdj_MA_ .tbl
 ANALYZE HETEROGENEITY

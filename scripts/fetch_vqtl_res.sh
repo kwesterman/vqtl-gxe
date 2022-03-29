@@ -29,11 +29,17 @@ rsync -ravP uger:kw/ukbb-vqtl/data/processed/ewis/ewis_ma_results_nom.csv ${ewis
 rsync -ravP uger:kw/ukbb-vqtl/data/processed/ewis/ewis_anc_results_nom.csv ${ewisdir}/
 rsync -ravP uger:kw/ukbb-vqtl/data/processed/ewis/ewis_ma_results_anthroPCs.csv ${ewisdir}/
 rsync -ravP uger:kw/ukbb-vqtl/data/processed/ewis/*ewis_ma_results_qq.pdf ${ewisdir}/
+rsync -ravP uger:kw/ukbb-vqtl/data/processed/ewis/ewis_ME_ma_results_nom.csv ${ewisdir}/
 
 sensitivitydir=../data/processed/sensitivity
-rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/*INT_vqtl.vqtl ../data/processed/sensitivity/
-rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/*adj_vqtl.vqtl ../data/processed/sensitivity/
-rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/metal/*tbl_* ../data/processed/sensitivity/
+rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/*INT_vqtl.vqtl ${sensitivitydir}/
+rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/*adj_vqtl.vqtl ${sensitivitydir}/
+rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/metal/*tbl_* ${sensitivitydir}/metal/
+rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/metal/*tbl ${sensitivitydir}/metal/
+rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/primary_vqtl_df_withME.csv ${sensitivitydir}/
 
 vignettesdir=../data/processed/vignettes
 rsync -ravP uger:kw/ukbb-vqtl/data/processed/vignettes ../data/processed/
+
+conditionaldir=../data/processed/ewis/conditional_analysis
+rsync -avP uger:kw/ukbb-vqtl/data/processed/ewis/conditional_analysis/independent_hits.csv ${conditionaldir}/

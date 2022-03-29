@@ -21,7 +21,7 @@ cat ${EWIS_DIR}/ewis_phenotype_list.txt | while read exp; do
 
 # Create new temporary file with STDERR column
 for ancestry in EUR AFR EAS SAS; do
-	echo "SNP REF ALT BETA STDERR" > ${EWIS_DIR}/${biomarker}/${ancestry}.tmp
+	echo "SNP NONEFF EFF BETA STDERR" > ${EWIS_DIR}/${biomarker}/${ancestry}.tmp
 	tail -n +2 ${EWIS_DIR}/${biomarker}/${exp}_${ancestry} \
 	| grep -v nan \
 	| awk '{print $1,$4,$5,$11,sqrt($13)}'  \
@@ -32,7 +32,7 @@ echo """
 SCHEME STDERR
 
 MARKER SNP
-ALLELE REF ALT
+ALLELE EFF NONEFF
 EFFECT BETA 
 STDERR STDERR
 

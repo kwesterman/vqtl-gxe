@@ -255,6 +255,16 @@ eas_phenos <- eas_samples %>%
 sas_phenos <- sas_samples %>%
   inner_join(phenos, by="id")
 
+joint_PCs <- read_csv("/humgen/florezlab/UKBB_app27892/ukbreturn2442/all_pops_non_eur_pruned_within_pop_pc_covs_app27892.csv") %>%
+  mutate(id = as.character(f.eid)) %>%
+  select(id, contains("PC")) %>%
+	 # contains("related"))  # Ensure unrelatedness by membership in ancestry-specific groups instead of using this value
+  filter(!duplicated(id))
+names(joint_PCs) <- gsub("_return2442", "", names(joint_PCs))
+all_phenos <- phenos %>%
+  inner_join(joint_PCs, by="id") %>%
+  filter(id %in% c(eur_phenos$id, afr_phenos$id, eas_phenos$id, sas_phenos$id))
+
 all_estimates <- list()
 all_r2 <- list()
 
@@ -263,12 +273,14 @@ for (bm in all_biomarkers) {
   afr_phenos[[paste0(bm, "_adj")]] <- preprocess_vqtl_biomarker(bm, afr_phenos, "afr")
   eas_phenos[[paste0(bm, "_adj")]] <- preprocess_vqtl_biomarker(bm, eas_phenos, "eas")
   sas_phenos[[paste0(bm, "_adj")]] <- preprocess_vqtl_biomarker(bm, sas_phenos, "sas")
+  all_phenos[[paste0(bm, "_adj")]] <- preprocess_vqtl_biomarker(bm, all_phenos, "all")
 }
 
 write_csv(eur_phenos, "../data/processed/vqtl_phenos_EUR.csv")
 write_csv(afr_phenos, "../data/processed/vqtl_phenos_AFR.csv")
 write_csv(eas_phenos, "../data/processed/vqtl_phenos_EAS.csv")
 write_csv(sas_phenos, "../data/processed/vqtl_phenos_SAS.csv")
+write_csv(all_phenos, "../data/processed/vqtl_phenos_all.csv")
 
 lapply(all_estimates, bind_rows, .id="ancestry") %>%
   bind_rows(.id="biomarker") %>%
