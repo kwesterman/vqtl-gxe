@@ -1,0 +1,2831 @@
+---
+output: html_document
+title: "Data preparation for vQTL manuscript"
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F, message=F,warning=F, dev="png", dpi=300,
+                      fig.path="figures/",
+                      cache.lazy=F, cache.path="../../cache/vqtl_ms/")
+suppressMessages(silent <- lapply(
+  c("knitr", "kableExtra", "data.table", "tidyverse", "cowplot", 
+    "pheatmap", "RColorBrewer", "GenomicRanges", "ggsci"), 
+  library, character.only=T))
+```
+
+```{r biomarkers, cache=2}
+biomarkers <- c(
+  "alt_log", "alb_log", "alp_log", "apoA_log", "apoB_statinadj_log", "ast_log", 
+  "hscrp_log", "chol_statinadj_log", "creatinine_log", "cysC_log", 
+  "bilirubin_dir_log", "ggt_log", "glu_log", "hba1c_log", "hdl_log", 
+  "ldl_statinadj_log", "lipA_log", "bilirubin_tot_log", "tg_log", "urea_log"
+)
+biomarkers_pretty <- c(
+  "ALT", "Albumin", "ALP", "ApoA", "ApoB", "AST", "hsCRP", "TC", "Creatinine",
+  "CysC", "Bilirubin-Dir", "GGT", "Glucose", "HbA1c", "HDL-C", "LDL-C", "LipA",
+  "Bilirubin-Tot", "TG", "Urea"
+)
+
+biomarkers_ordered <- scan("../../data/processed/metabolic_biomarkers_ordered.txt",
+                           what=character())
+biomarkers_order <- match(biomarkers_ordered, biomarkers)
+
+n_eff_bm <- 11.1
+vqtl_bonferroni <- 5e-8 / n_eff_bm
+```
+
+# Population
+
+```{r population}
+diseases <- c("diabetes", "CHD", "cirrhosis", "esrd", "cancer_within_1yearac", "pregnant")
+pheno_fields_to_keep <- c("id", "sex", "bmi", "age",
+                          paste0("PC", 1:10),
+                          biomarkers, paste0(biomarkers, "_adj"),
+                          diseases)
+eur_phenos <- fread("../../data/processed/vqtl_phenos_EUR.csv",
+                    select=pheno_fields_to_keep,
+                    data.table=F, stringsAsFactors=F)
+afr_phenos <- fread("../../data/processed/vqtl_phenos_AFR.csv",
+                    select=pheno_fields_to_keep,
+                    data.table=F, stringsAsFactors=F)
+eas_phenos <- fread("../../data/processed/vqtl_phenos_EAS.csv",
+                    select=pheno_fields_to_keep,
+                    data.table=F, stringsAsFactors=F)
+sas_phenos <- fread("../../data/processed/vqtl_phenos_SAS.csv",
+                    select=pheno_fields_to_keep,
+                    data.table=F, stringsAsFactors=F)
+
+all_phenos <- bind_rows(list(AFR=afr_phenos, EAS=eas_phenos, EUR=eur_phenos, SAS=sas_phenos),
+          .id="ancestry") %>%
+  filter(!diabetes, !CHD, !cirrhosis, !esrd, !cancer_within_1yearac, !pregnant) %>%
+  filter_at(biomarkers, any_vars(!is.na(.))) %>%
+  select(ancestry, sex, age, bmi, all_of(biomarkers))
+```
+
+* `r round(sum(all_phenos$ancestry == "EUR") / nrow(all_phenos) * 100, 2)`% of the samples are European.
+
+# vQTL results
+
+```{r load-vqtl-data, cache=2}
+# No INFO filter needed here due to prior INFO filtering in postprocessing script
+
+bim_df <- fread("../../data/processed/all_chr.bim",
+                col.names=c("CHR", "SNP", "CM", "POS", "ALT", "REF")) %>%
+  select(SNP, CHR, POS)
+
+read_nom_vqtl <- function(bm, ancestry) {
+  if (ancestry == "MA") {
+    fread(paste0("../../data/processed/vqtl_ss/metal/", bm, "_MA_1.tbl_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, REF, ALT, P, Dir, ISq, HetP) %>%
+      inner_join(bim_df, by="SNP") %>%
+      mutate_at(vars(ALT, REF), toupper) %>%
+      mutate(CHR=as.character(CHR))
+  } else {
+    fread(paste0("../../data/processed/vqtl_ss/", 
+                 bm, "_", ancestry, "_vqtl_merged_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, CHR, POS, REF, ALT, AF, N, BETA, P) %>%
+      mutate(CHR=as.character(CHR))
+  }
+}
+
+read_nom_me <- function(bm, ancestry) {
+  if (ancestry == "MA") {
+    fread(paste0("../../data/processed/main_effect_ss/metal/", bm, "_MA_1.tbl_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, P, Dir, ISq, HetP) %>%
+      inner_join(bim_df, by="SNP") %>%
+      mutate(CHR=as.character(CHR))
+  } else {
+    fread(paste0("../../data/processed/main_effect_ss/", 
+                 bm, "_", ancestry, "_ME_merged_nom"),
+          stringsAsFactors=F, data.table=F) %>%
+      select(SNP, CHR, POS, REF, ALT, N, BETA, P) %>%
+      mutate(CHR=as.character(CHR))
+  }
+}
+
+ancestries <- c("EUR", "AFR", "EAS", "SAS")
+
+vqtl_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  anc_list <- lapply(c(ancestries, "MA"), function(anc) {
+    read_nom_vqtl(bm, anc)
+  })
+  setNames(anc_list, c(ancestries, "MA"))
+})
+
+me_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  anc_list <- lapply(c(ancestries, "MA"), function(anc) {
+    read_nom_me(bm, anc)
+  })
+  setNames(anc_list, c(ancestries, "MA"))
+})
+
+meta_list <- list(
+  vqtl = map(vqtl_list, "MA"),
+  me = map(me_list, "MA")
+)
+
+vqtl_gc_lambdas <- sapply(setNames(biomarkers, biomarkers), function(bm) {
+  scan(paste0("../../data/processed/vqtl_ss/qq_plots/", bm, "_MA_1_lambda"))
+})
+me_gc_lambdas <- sapply(setNames(biomarkers, biomarkers), function(bm) {
+  scan(paste0("../../data/processed/main_effect_ss/qq_plots/", bm, "_MA_1_lambda"))
+})
+```
+
+```{r write-vqtls-cmdkp, cache=2, dependson="load-vqtl-data"}
+for (bm in names(vqtl_list)) {
+  vqtl_list[[bm]][["MA"]] %>%
+    mutate(P = ifelse(P == 0, 1e-300, P)) %>%
+    select(CHR, POS, SNP, REF, ALT, P) %>%
+    write_csv(paste0("../../data/processed/cmdkp/", bm, "_vqtl_metaanalysis_p0.01.csv"))
+}
+```
+
+```{r vqtl-pruning, cache=2, dependson="load-vqtl-data"}
+prune_chromosome <- function(chr_df, pval_col, locus_width) {
+  # Prune variants given a chromosome-specific summary statistic data frame
+  df <- arrange(chr_df, !!sym(pval_col))  # Sort by ascending p-value
+  pruned_df <- tibble()
+  while(nrow(df) > 0) {
+    pruned_df <- bind_rows(pruned_df, df[1, ])  # Add lowest p-value to pruned dataset
+    df <- filter(df, (POS < df$POS[1] - locus_width / 2) |  # Remove rest of variants in that distance-based locus
+                   (POS > df$POS[1] + locus_width / 2))
+  }
+  pruned_df
+}
+
+prune_variants <- function(ss_df, pval_col, thresh=5e-8, locus_width=1000000) {
+  # Prune variants across all chromosomes using a simple distance-based approach
+  if (min(ss_df[[pval_col]], na.rm=T) > thresh) return(tibble())
+  ss_df %>%
+    filter(!!sym(pval_col) < thresh) %>%
+    mutate(POS = as.numeric(POS)) %>%
+    nest(data=-CHR) %>%
+    mutate(pruned_ss=map(data, prune_chromosome, pval_col, locus_width)) %>%
+    unnest(pruned_ss) %>%
+    select(-data) %>%
+    dplyr::rename(index_var=SNP)
+}
+
+pruned_vqtl_ss <- lapply(vqtl_list, function(anc_vqtls) {
+  lapply(anc_vqtls, prune_variants, "P")
+})
+pruned_me_ss <- lapply(me_list, function(anc_mes) {
+  lapply(anc_mes, prune_variants, "P")
+})
+
+find_overlaps <- function(df, pval_col, locus_width) {
+  # df should have all (pre-pruned) summary statistics concatenated into  
+  # single data frame with a column named "source" as ID
+  df <- arrange(df, !!sym(pval_col))  # Sort by ascending p-value
+  group_df <- tibble()
+  while(nrow(df) > 0) {
+    new_group_idx <- with(df, which(
+      (CHR == CHR[1]) & 
+        (POS >= POS[1] - locus_width / 2) & 
+        (POS <= POS[1] + locus_width / 2)
+    ))
+    new_group_df <- df[new_group_idx, ]
+    new_group_df$group_index_var <- df$index_var[1]
+    group_df <- bind_rows(group_df, new_group_df)
+    df <- df[-new_group_idx, ]
+  }
+  group_df
+}
+```
+
+```{r annotate-vqtls}
+bind_rows(map(pruned_vqtl_ss, bind_rows, .id="ancestry"), .id="bm") %>%  # All meta-analysis and ancestry-specific
+  distinct(index_var, .keep_all=TRUE) %>%
+  select(CHR, start=POS, end=POS, REF, ALT) %>%
+  write_tsv("../../data/processed/vqtl_ss/annovar/vqtl_variants.avinput")
+
+gene_annots <- read_tsv("../../data/processed/vqtl_ss/annovar/vqtl_variants.variant_function",
+         col_names=c("type", "gene", "CHR", "POS", "end", "a1", "a2")) %>%
+  select(CHR, POS, gene) %>%
+  mutate(CHR = as.character(CHR)) %>% 
+  separate_rows(gene, sep=",") %>% 
+  mutate(gene_dist = gsub("dist=", "", str_extract(gene, "dist=[0-9]*")),
+         gene_dist = as.numeric(gene_dist),
+         gene = gsub("\\(.*", "", gene)) %>%
+  group_by(CHR, POS) %>%
+  arrange(gene_dist) %>%
+  dplyr::slice(1) %>%
+  ungroup() %>%
+  select(CHR, POS, gene)
+extra_gene_annots_manual <- tibble(
+  CHR = as.character(c(1, 19, 4, 6, 10, 10, 6, 22)),
+  POS = c(63038303, 19393890, 88231392, 31100625, 65290254, 60302607, 53946191, 36055987),
+  gene = c("DOCK7", "SUGP1", "HSD17B13", "PSORS1C1", "REEP3", "BICC1", "MLIP", "APOL6")
+)
+gene_annots <- bind_rows(gene_annots, extra_gene_annots_manual)
+saveRDS(gene_annots, "../../data/processed/gene_annots.rds")
+```
+
+## Meta-analysis
+
+Due to correlations between biomarkers, the associated multiple hypothesis testing correction can be eased somewhat. Following the approach taken by Wang et al. 2019, we calculated the number of effective phenotypes using the eigenvalues of the biomarker covariance matrix (as taken from PCA) as: $(\Sigma_{k=1}^p\lambda_k)^2/\Sigma_{k=1}^p\lambda_k^2$.
+Using the set of 20 adjusted biomarkers in the European sample, this produced an estimate of `r n_eff_bm` effective biomarkers, for a corrected p-value threshold of $5\times10^{-8}$ / 11.1 = $4.5\times10^{-9}$.
+
+```{r merged, cache=2}
+vqtl_merged <- bind_rows(meta_list$vqtl, .id="bm")
+me_merged <- bind_rows(meta_list$me, .id="bm")
+```
+
+```{r vqtl-selection}
+vqtl_df <- bind_rows(
+  map(pruned_vqtl_ss, bind_rows, .id="ancestry"), .id="bm"
+) %>%
+  select(SNP=index_var, CHR, POS, REF, ALT, bm, ancestry, BETA, P_vqtl=P)
+
+# Confirm that this vQTL set is identical to that from the prior vQTL processing script
+vqtl_df2 <- read_csv("../../data/processed/ewis/ewis_variant_data.csv") %>%
+  dplyr::rename(SNP=index_var, P_vqtl=P)
+stopifnot(dim(vqtl_df) == dim(vqtl_df2))
+
+primary_vqtl_df <- vqtl_df %>%
+  filter(ancestry == "MA",
+         P_vqtl < vqtl_bonferroni) %>%
+  select(-ancestry)
+
+primary_ME_df <- bind_rows(
+  map(pruned_me_ss, bind_rows, .id="ancestry"), .id="bm"
+) %>%
+  select(SNP=index_var, CHR, POS, REF, ALT, bm, ancestry, BETA, P_ME=P) %>% 
+  filter(ancestry == "MA",
+         P_ME < vqtl_bonferroni) %>%
+  select(-ancestry)
+```
+
+```{r prune-merged-biomarkers}
+# Point is to clump single loci that have different lead variants across biomarkers
+primary_vqtl_clumps_df <- dplyr::rename(primary_vqtl_df, index_var=SNP) %>%
+  find_overlaps("P_vqtl", 1e6)
+
+canonical_gw_vqtl_clumps_df <- vqtl_df %>%
+  filter(ancestry == "MA") %>%
+  dplyr::rename(index_var=SNP) %>%
+  find_overlaps("P_vqtl", 1e6)
+```
+
+* The `r nrow(primary_vqtl_df)` variant-biomarker pairs (`r length(unique(primary_vqtl_df$SNP))` index variants) passing a multiple testing-corrected genome-wide threshold (p = `r signif(vqtl_bonferroni, 3)`) in the meta-analysis will be taken forward for the primary analysis.
+* Though the more strict threshold above will be used, `r nrow(filter(vqtl_df, ancestry == "MA", P_vqtl < 5e-8))` variant-biomarker pairs (`r length(unique(filter(vqtl_df, ancestry == "MA", P_vqtl < 5e-8)$SNP))` index variants) pass a basic genome-wide significance threshold in the meta-analysis.
+* The `r nrow(primary_vqtl_df)` variant-biomarker pairs translates to an average of `r nrow(primary_vqtl_df) / n_eff_bm` vQTLs per effective phenotype, compared to an average of `r 75 / 5.0` from Wang et al. 2019.
+* The `r length(unique(vqtl_df$SNP))` variants with p < $5\times10^{-8}$ for any biomarker and ancestry (or meta-analysis) will be tested so their results are available. Using this more-relaxed threshold for the meta-analysis results, we find `r nrow(filter(vqtl_df, ancestry == "MA"))` variant-biomarker pairs at `r length(unique(canonical_gw_vqtl_clumps_df$group_index_var))` index variants.
+* vQTL meta-analysis heterogeneity tended to be low, with the following $I^2$ statistics for the significant vQTL biomarker pairs: `r summary(inner_join(vqtl_merged, primary_vqtl_df, by=c("SNP", "bm"))$ISq)`
+
+```{r manhattan-prep, cache=2, dependson="load-data"}
+vqtl_concat_minP <- bind_rows(meta_list$vqtl, .id="bm") %>%
+  group_by(SNP) %>%
+  filter(P == min(P, na.rm=T)) %>%
+  ungroup()
+
+me_concat_minP <- bind_rows(meta_list$me, .id="bm") %>%
+  group_by(SNP) %>%
+  filter(P == min(P, na.rm=T)) %>%
+  ungroup()
+```
+
+```{r manhattan, cache=2, dependson="manhattan-prep", fig.asp=1, fig.cap="Manhattan plot of all vQTL results. Minimum P per variant is shown. It is hard to glean useful information from this plot.", out.width="70%", include=F}
+mh_data <- bind_rows(list(vqtl=vqtl_concat_minP, me=me_concat_minP), .id="source")  %>%
+  filter(!is.na(P)) %>%
+  mutate(P = ifelse(P == 0, min(1e-300, min(P[P != 0], na.rm=T)), P),  # Remove P = 0
+         nlp = -log10(P))
+
+# Trim points in crowded regions (credit to RaMWAS package for code snippet)
+yfac = as.integer(mh_data$nlp * 100) + 1L
+yorder = sort.list(yfac)
+yfac <- factor(yfac, levels=as.character(seq_len(max(yfac))))
+ygroup <- split(seq_along(yfac), yfac)
+for (i in seq_along(ygroup)) {
+  if (length(ygroup[[i]]) > 300) {
+    ygroup[[i]] <- sample(ygroup[[i]], size=300, replace=F)
+  }
+}
+keep <- unlist(ygroup, use.names=FALSE)
+
+mh_data <- mh_data %>%
+  select(SNP, CHR, POS, nlp, source) %>%
+  dplyr::slice(keep) %>%
+  mutate(POS = as.numeric(as.character(POS)),
+         CHR = factor(CHR, levels=1:22)) %>%
+  arrange(CHR, POS) %>%
+  mutate(pos_idx = seq(1, nrow(.)))
+
+chr_lengths <- sapply(1:22, function(chr) with(mh_data, max(POS[CHR == chr])))
+chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+
+mh_data <- mh_data %>%
+  mutate(x_coord = chr_start_pos[CHR] + POS,
+         color = CHR,
+  ) %>%
+  arrange(as.integer(color), nlp)
+
+lims <- mh_data %>%
+  group_by(CHR) %>%
+  summarise(avg_coord = (min(x_coord) + max(x_coord)) / 2)
+
+mh_cols <- setNames(
+  rep(x=c("#999999", "#555555"), length.out=22),  # Gray/dark gray for alternating chromosomes
+  levels(factor(lims$CHR))
+)
+
+p1 <- ggplot() +
+  geom_point(data=filter(mh_data, source == "vqtl"), 
+             aes(x=x_coord, y=nlp, color=factor(color)), 
+             size=0.6, alpha=1) +
+  geom_hline(yintercept=-log10(vqtl_bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  scale_y_continuous(limits=c(2, 102), expand=c(0, 0),
+                     name=expression(-log[10](italic(p))*" for vQTL effect")) +
+  scale_colour_manual(values=mh_cols, guide=F) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_text(vjust = -1.5),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+p2 <- ggplot() +
+  geom_point(data=filter(mh_data, source == "me"), 
+             aes(x=x_coord, y=nlp, color=factor(color)), 
+             size=0.75, alpha=1) +
+  geom_hline(yintercept=-log10(vqtl_bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  # scale_y_continuous(name=expression(-log[10](italic(p)))) +
+  scale_colour_manual(values=mh_cols, guide=F) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank()) +
+  scale_y_reverse(limits=c(102, 0), expand=c(0, 0),
+                  name=expression(-log[10](italic(p))*" for main effect"))
+
+plot_grid(p1 + guides(color=F), 
+          p2 + guides(color=F), 
+          align='v', nrow=2, rel_heights=c(5, 5))
+```
+
+### vQTL "pleiotropy"
+
+```{r vqtl-pleiotropy, cache=2, dependson="vqtl-pruning"}
+vqtl_bm_overlaps <- map(pruned_vqtl_ss, "MA") %>%
+  bind_rows(.id="bm") %>%
+  filter(P < vqtl_bonferroni) %>%
+  find_overlaps("P", 1000000)
+
+vqtl_bm_overlap_df <- vqtl_bm_overlaps %>%
+  group_by(group_index_var) %>% 
+  summarise(n=n(),
+            biomarkers=paste(bm, collapse=", ")) %>%
+  arrange(desc(n))
+```
+
+* After merging all biomarker-specific results and re-pruning, we find `r length(unique(vqtl_bm_overlap_df$group_index_var))` independent vQTL in total.
+* `r sum(vqtl_bm_overlap_df$n > 1)` vQTL loci are shared across multiple biomarkers, with the maximum being at `r vqtl_bm_overlap_df$group_index_var[1]` (shared across `r vqtl_bm_overlap_df$n[1]` biomarkers)
+* `r sum(vqtl_bm_overlap_df$n >= 4)` loci are shared among at least four biomarkers.
+
+### vQTL-main effect overlap
+
+```{r vqtl-me-overlaps, cache=2, dependson=c("biomarkers", "pruning")}
+vqtl_me_overlaps <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  vqtl_me_concat <- bind_rows(
+    list(vqtl=pruned_vqtl_ss[[bm]]$MA, me=pruned_me_ss[[bm]]$MA),
+    .id="source"
+  ) %>%
+    filter(P < vqtl_bonferroni)
+  vqtl_me_overlap <- find_overlaps(vqtl_me_concat, "P", 1000000)
+})
+
+vqtl_me_overlap_tbl <- map_dfr(vqtl_me_overlaps, function(vmo) {
+  vmo_wide <- vmo %>% 
+    filter(any(P < vqtl_bonferroni)) %>%
+    group_by(group_index_var) %>% 
+    summarise(vqtl_locus = "vqtl" %in% source, 
+              me_locus = "me" %in% source,
+              variants = paste(index_var, collapse=";"),
+              same_variant = ifelse(n() == 2,
+                                    length(unique(index_var)) == 1,  # Same index variant for vQTL and ME?
+                                    NA),
+              .groups="drop")
+  with(vmo_wide, tibble(
+    vqtls = sum(vqtl_locus),
+    vqtl_only = sum(vqtl_locus & !me_locus),
+    vqtl_and_me = sum(vqtl_locus & me_locus),
+    mes = sum(me_locus),
+    pct_vqtl_with_me = round(sum(vqtl_locus & me_locus) / sum(vqtl_locus) * 100),
+    pct_me_with_vqtl = round(sum(vqtl_locus & me_locus) / sum(me_locus) * 100),
+    pct_same_variant = round(sum(same_variant, na.rm=TRUE) / 
+                               sum(!is.na(same_variant)) * 100),
+  ))
+}, .id="bm")
+```
+
+```{r vqtl-add-nonSig-mes}
+primary_vqtl_df_withMEs <- read_csv("../../data/processed/sensitivity/primary_vqtl_df_withME.csv") %>%
+  filter(ancestry == "MA") %>%
+  select(SNP=index_var, bm, beta_ME, P_ME) %>%
+  inner_join(primary_vqtl_df, by=c("SNP", "bm"))
+```
+
+```{r vqtls-without-mes}
+vqtl_me_overlap_df <- bind_rows(vqtl_me_overlaps, .id="bm") %>%
+  group_by(bm, group_index_var) %>%
+  mutate(has_me = any(source == "me")) %>%
+  ungroup() %>%
+  filter(source == "vqtl") %>%
+  select(bm, index_var, group_index_var, CHR, has_me) %>%
+  inner_join(select(primary_vqtl_df_withMEs, SNP, bm, beta_ME, P_ME), 
+             by=c("index_var"="SNP", "bm"))
+
+vqtl_noME_df <- vqtl_me_overlap_df %>%
+  filter(!has_me)
+
+vqtl_noME_chromCount_plt <- vqtl_me_overlap_df %>%
+  filter(!has_me) %>%
+  mutate(CHR = factor(CHR, levels=1:22)) %>%
+  ggplot(aes(x=CHR)) +
+  geom_histogram(stat="count")
+
+vqtl_me_overlap_byBiomarker_plt <- vqtl_me_overlap_df %>%
+  group_by(bm) %>%
+  mutate(N_vqtls = n()) %>%
+  ungroup() %>%
+  arrange(desc(N_vqtls)) %>%
+  mutate(bm = factor(bm, levels=unique(bm))) %>%
+  ggplot(aes(x=bm, fill=has_me)) +
+  geom_histogram(stat="count", position=position_dodge()) +
+  theme(axis.text.x=element_text(angle=30, hjust=0.9))
+```
+
+* `r with(vqtl_me_overlap_tbl, round(sum(vqtl_and_me) / sum(vqtls) * 100, 1))`% of vQTLs also support a main effect, while `r with(vqtl_me_overlap_tbl, round(sum(vqtl_and_me) / sum(mes) * 100, 1))`% of main effect loci also support a variance effect.
+* Specifically for creatinine: `r filter(vqtl_me_overlap_tbl, bm == "creatinine_log")$vqtls` vQTLs, `r filter(vqtl_me_overlap_tbl, bm == "creatinine_log")$mes` MEs.
+* Specifically for LipA: `r filter(vqtl_me_overlap_tbl, bm == "lipA_log")$vqtls` vQTLs, `r filter(vqtl_me_overlap_tbl, bm == "lipA_log")$mes` MEs.
+* Specifically for GGT: `r filter(vqtl_me_overlap_tbl, bm == "ggt_log")$vqtls` vQTLs, `r filter(vqtl_me_overlap_tbl, bm == "ggt_log")$mes` MEs.
+
+* Of the vQTL loci without an overlapping ME, `r sum(vqtl_noME_df$P_ME < 0.05)` variants have a suggestive ME (Bonferroni < P_ME < 0.05).
+
+```{r vqtl-vs-me-enrichment, cache=2}
+primary_vqtl_bed <- primary_vqtl_df %>%
+  mutate(chrom = paste0("chr", CHR),
+         chromStart = POS - 1,
+         chromEnd = POS) %>%
+  select(chrom, chromStart, chromEnd)
+write_tsv(primary_vqtl_bed, "../../data/processed/LOLA/primary_vqtl.bed")
+primary_ME_bed <- primary_ME_df %>%
+  mutate(chrom = paste0("chr", CHR),
+         chromStart = POS - 1,
+         chromEnd = POS) %>%
+  select(chrom, chromStart, chromEnd)
+write_tsv(primary_ME_bed, "../../data/processed/LOLA/primary_ME.bed")
+
+library(LOLA)
+# Full space of epigenomic region definitions
+regionDB <- loadRegionDB("../../data/raw/LOLA/nm/t1/resources/regions/LOLACore/hg19", useCache=TRUE)
+
+# vQTL and ME region sets
+regionSetVqtl <- readBed("../../data/processed/LOLA/primary_vqtl.bed")
+regionSetME <- readBed("../../data/processed/LOLA/primary_ME.bed")
+userSets <- GRangesList(regionSetVqtl, regionSetME)
+
+# "Universe"/background set of epigenomic regions
+# Option 1: union of all DHS from Sheffield et al. 2013
+activeDHS <- unlist(regionDB$regionGRL[which(regionDB$regionAnno$collection == "sheffield_dnase")])
+activeDHS <- disjoin(activeDHS)
+# Option 2: union of two sets being tested (will then be comparative, rather than absolute, enrichment)
+vqtlMeUniverse <- unlist(userSets)
+
+# Run LOLA for enrichment analysis
+dhs_based_results <- runLOLA(userSets, activeDHS, regionDB)
+dhs_res_df <- dhs_based_results %>%
+  select(userSet, collection, pValueLog, oddsRatio, description, cellType, tissue, antibody, treatment) %>%
+  mutate(p = 10^(-pValueLog),
+         padj = p.adjust(p, method="BH"))
+write_csv(dhs_res_df, "../../data/processed/LOLA/dhs_based_results.csv")
+compare_based_results <- runLOLA(userSets, vqtlMeUniverse, regionDB)
+compare_res_df <- compare_based_results %>%
+  select(userSet, collection, pValueLog, oddsRatio, description, cellType, tissue, antibody, treatment) %>%
+  mutate(p = 10^(-pValueLog),
+         padj = p.adjust(p, method="BH"))
+write_csv(compare_res_df, "../../data/processed/LOLA/compare_based_results.csv")
+```
+
+### Genetic correlations
+
+```{r genetic-correlations, cache=2}
+read_gen_corr <- function(bm1, bm2, type) {
+  fread(cmd=paste0("cat ../../data/processed/", type, "_ss/ldsc/", 
+                   gsub("_statinadj|_log", "", bm1), "_", gsub("_statinadj|_log", "", bm2), 
+                   "_EUR.log | tail -n 5"),
+        data.table=F)
+}
+
+vqtl_gc_df <- expand_grid(bm1 = biomarkers, bm2 = biomarkers) %>%
+  mutate(gc_res = map2(bm1, bm2, read_gen_corr, "vqtl")) %>%
+  unnest(gc_res) %>%
+  select(bm1, bm2, rg, p) %>%
+  arrange(match(bm1, biomarkers), match(bm2, biomarkers))
+
+me_gc_df <- expand_grid(bm1 = biomarkers, bm2 = biomarkers) %>%
+  mutate(gc_res = map2(bm1, bm2, read_gen_corr, "main_effect")) %>%
+  unnest(gc_res) %>%
+  select(bm1, bm2, rg, p)
+
+merged_gc_df <- inner_join(vqtl_gc_df, me_gc_df, 
+                           by=c("bm1", "bm2"), suffix=c(".vqtl", ".me"))
+
+merged_distinct_gc_df <- merged_gc_df %>%
+  filter(bm1 != bm2,
+         !duplicated(paste0(pmax(bm1, bm2), pmin(bm1, bm2))))
+```
+
+* Across all non-identical biomarker pairs, the Pearson correlation between vQTL r_g and ME r_g is `r round(with(merged_distinct_gc_df, cor(rg.vqtl, rg.me)), 2)`.
+* Across all non-identical biomarker pairs, the Spearman correlation between vQTL r_g and ME r_g is `r round(with(merged_distinct_gc_df, cor(rg.vqtl, rg.me, method="spearman")), 2)`.
+* Across all non-identical biomarker pairs, the r_g magnitudes were similar (mean of `r mean(abs(merged_distinct_gc_df$rg.vqtl))` for vQTL vs. `r mean(abs(merged_distinct_gc_df$rg.me))` for ME).
+* Across all non-identical biomarker pairs, there are `r with(merged_distinct_gc_df, sum(p.vqtl < 0.05 & p.me < 0.05 & abs(rg.vqtl - rg.me) > 0.2))` instances in which vQTL r_g and ME r_g differ by more than 0.2.
+
+## Ancestry-specific results
+
+```{r ancestry-overlaps, cache=2, dependson="pruning", include=F}
+anc_overlaps <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  anc_concat <- bind_rows(pruned_vqtl_ss[[bm]], .id="ancestry")
+  anc_overlap <- find_overlaps(anc_concat, "P", 1000000)
+})
+
+anc_overlap_tbl <- map_dfr(anc_overlaps, function(vmo) {
+  vmo_summ <- vmo %>% 
+    filter(P < vqtl_bonferroni) %>%  # Only examine multiple testing-corrected significant variants
+    group_by(group_index_var) %>% 
+    filter(!("MA" %in% ancestry)) %>%
+    summarise(eur = "EUR" %in% ancestry,
+              afr = "AFR" %in% ancestry,
+              eas = "EAS" %in% ancestry,
+              sas = "SAS" %in% ancestry,
+              eur_only = all(ancestry == "EUR"),
+              nonEur_only = !("EUR" %in% ancestry),
+              multiAncestry = n() >= 2,
+              .groups="drop")
+  with(vmo_summ, tibble(
+    `Total` = nrow(vmo_summ),
+    `European` = sum(eur),
+    `West African` = sum(afr),
+    `East Asian` = sum(eas),
+    `South Asian` = sum(sas),
+    `European only` = sum(eur_only),
+    `Non-European only` = sum(nonEur_only),
+    `Multi-ancestry` = sum(multiAncestry)
+  ))
+}, .id="Biomarker")
+
+anc_overlap_tbl
+
+anc_specific_tbl <- map_dfr(anc_overlaps, function(vmo) {
+  vmo %>% 
+    filter(P < vqtl_bonferroni) %>%  # Only examine multiple testing-corrected significant variants
+    group_by(group_index_var) %>% 
+    filter(!("MA" %in% ancestry)) %>%
+    ungroup()
+}, .id="bm")
+
+write(anc_specific_tbl$index_var, "../../data/processed/ancestry_specific/ancestry_specific_variants.txt")
+```
+
+* `r sum(anc_overlap_tbl[[2]])` vQTLs reached Bonferroni significance in at least one ancestry but *not* in the meta-analysis. Of these:
+    - `r sum(anc_overlap_tbl[[7]])` of these only reached this threshold in Europeans
+    - `r sum(anc_overlap_tbl[[8]])` of these only reached this threshold in non-Europeans
+    
+Exploring a few of the most significant ancestry-specific vQTL hits with and without very low-frequency genotype groups:
+
+```{r anc-spec-vqtl-viz}
+anc_spec_genotypes <- read_tsv("../../data/processed/ancestry_specific/ancestry_specific_genotypes.raw") %>%
+  select(id=IID, 7:ncol(.)) %>%
+  rename_at(vars(-id), ~sub("_[ACGT]*$", "", .))
+
+anc_spec_phenos <- list(
+  AFR = read_csv("../../data/processed/vqtl_phenos_AFR.csv"),
+  EAS = read_csv("../../data/processed/vqtl_phenos_EAS.csv"),
+  SAS = read_csv("../../data/processed/vqtl_phenos_SAS.csv")
+)
+
+make_gt_strat_plot <- function(snp, bm, pop) {
+  phenos <- anc_spec_phenos[[pop]]
+  plot_df <- inner_join(phenos, anc_spec_genotypes, by="id") %>%
+    mutate(gt = factor(round(!!sym(snp))))
+  af <- sum(plot_df[[snp]]) / (2 * nrow(plot_df))
+  maf <- round(pmin(af, 1 - af), 3)
+  N_df <- plot_df %>%
+    group_by(gt) %>%
+    summarise(N = n())
+  plot_df %>%
+    mutate(gt = factor(gt, labels=paste0(levels(gt), "\n(N=", 
+                                        N_df$N[match(levels(gt), N_df$gt)], ")"))) %>%
+    ggplot(aes(x=gt, y=!!sym(bm))) +
+    geom_boxplot() +
+    labs(title=pop, x=paste0(snp, " (MAF = ", maf, ")"))
+}
+
+sas_rs117308488_strat_plt <- make_gt_strat_plot("rs117308488", "chol_statinadj_log_adj", "SAS")
+sas_rs117308488_df <- inner_join(anc_spec_phenos$SAS, anc_spec_genotypes, by="id") %>%
+  mutate(gt = factor(round(rs117308488)))
+with(sas_rs117308488_df, car::leveneTest(chol_statinadj_log_adj, gt))
+with(filter(sas_rs117308488_df, gt != 0), car::leveneTest(chol_statinadj_log_adj, gt))
+
+afr_rs10486866 <- make_gt_strat_plot("rs10486866", "glu_log_adj", "AFR")
+afr_rs10486866_df <- inner_join(anc_spec_phenos$AFR, anc_spec_genotypes, by="id") %>%
+  mutate(gt = factor(round(rs10486866)))
+with(afr_rs10486866_df, car::leveneTest(glu_log_adj, gt))
+with(filter(afr_rs10486866_df, gt != 0), car::leveneTest(ldl_statinadj_log_adj, gt))
+
+sas_rs143505534_strat_plt <- make_gt_strat_plot("rs143505534", "glu_log_adj", "SAS")
+sas_rs143505534_df <- inner_join(anc_spec_phenos$SAS, anc_spec_genotypes, by="id") %>%
+  mutate(gt = factor(round(rs143505534)))
+with(sas_rs143505534_df, car::leveneTest(glu_log_adj, gt))
+with(filter(sas_rs143505534_df, gt != 0), car::leveneTest(glu_log_adj, gt))
+```
+
+## vQTL sensitivity analyses
+
+```{r load-vqtl-INT}
+read_INT_vqtl <- function(bm) {
+  fread(paste0("../../data/processed/sensitivity/", bm, "_EUR_INT_vqtl.vqtl"),
+        stringsAsFactors=F, data.table=F) %>%
+    select(SNP, CHR=Chr, POS=bp, REF=A2, ALT=A1, P) %>%
+    mutate(CHR=as.character(CHR))
+}
+
+vqtl_df_INT <- lapply(biomarkers, read_INT_vqtl) %>%
+  setNames(biomarkers) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, SNP, P_INT=P)
+```
+
+```{r load-vqtl-bmiAdj}
+read_bmiAdj_vqtl <- function(bm) {
+  fread(paste0("../../data/processed/sensitivity/", bm, "_EUR_21001adj_vqtl.vqtl"),
+        stringsAsFactors=F, data.table=F) %>%
+    select(SNP, CHR=Chr, POS=bp, REF=A2, ALT=A1, P) %>%
+    mutate(CHR=as.character(CHR))
+}
+
+vqtl_df_bmiAdj <- lapply(biomarkers, read_bmiAdj_vqtl) %>%
+  setNames(biomarkers) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, SNP, P_bmiAdj=P)
+```
+
+```{r vqtl-sensitivity}
+vqtl_df_raw <- primary_vqtl_df %>%
+  select(bm, SNP) %>%
+  inner_join(bind_rows(map(vqtl_list, "EUR"), .id="bm"), by=c("bm", "SNP")) %>%
+  select(SNP, bm, P_raw=P)  # Get European P-values for those meta-analysis pairs
+
+vqtl_sens_plt_df <- vqtl_df_raw %>%
+  left_join(vqtl_df_INT, by=c("bm", "SNP")) %>%
+  left_join(vqtl_df_bmiAdj, by=c("bm", "SNP")) %>%
+  mutate_at(vars(contains("P_")), ~pmax(., 1e-300)) %>%
+  mutate_at(vars(contains("P_")), ~-log10(.)) %>%
+  setNames(gsub("P_", "nlp_", names(.)))
+
+num_sig_raw <- sum(vqtl_sens_plt_df$nlp_raw > -log10(vqtl_bonferroni))
+num_sig_INT <- sum(vqtl_sens_plt_df$nlp_INT > -log10(vqtl_bonferroni))
+num_nom_INT <- sum(vqtl_sens_plt_df$nlp_INT > -log10(0.05))
+num_sig_bmiAdj <- sum(vqtl_sens_plt_df$nlp_bmiAdj > -log10(vqtl_bonferroni))
+```
+
+* European-subset p-values were retrieved for the `r nrow(vqtl_df_raw)` significant meta-analysis variants that also showed p < 5e-8 in Europeans. Of these, `r with(vqtl_sens_plt_df, sum(nlp_raw > -log10(vqtl_bonferroni)))` passed the study-wide multiple testing correction in Europeans.
+* `r num_sig_INT` (`r round(num_sig_INT / num_sig_raw * 100, 1)`%) remained significant when using an inverse-normal transformed outcome. `r num_nom_INT` (`r round(num_nom_INT / num_sig_raw * 100, 1)`%) remained nominally significant (p < 0.05).
+* `r num_sig_bmiAdj` (`r round(num_sig_bmiAdj / num_sig_raw * 100, 1)`%) remained significant when using an outcome residualized on BMI. 
+
+```{r load-vqtl-expAdj, cache=2}
+read_expAdj_vqtl <- function(bm) {
+  fread(paste0("../../data/processed/sensitivity/metal/", bm, "_expAdj_MA_1.tbl"),
+        stringsAsFactors=F, data.table=F) %>%
+    dplyr::rename(SNP=MarkerName) %>%
+    inner_join(bim_df, by="SNP") %>%
+    select(SNP, CHR, POS, P_expAdj=`P-value`)
+}
+
+vqtl_list_expAdj <- lapply(setNames(biomarkers, biomarkers), read_expAdj_vqtl)
+vqtl_df_expAdj <- bind_rows(vqtl_list_expAdj, .id="bm")
+```
+
+```{r prune-vqtl-expAdj, cache=2}
+pruned_vqtl_ss_expAdj <- lapply(vqtl_list_expAdj, prune_variants, "P_expAdj")
+primary_vqtl_df_expAdj <- bind_rows(pruned_vqtl_ss_expAdj, .id="bm")
+```
+
+```{r expAdj-comparison}
+expAdj_comparison_df <- primary_vqtl_df %>%
+  left_join(vqtl_df_expAdj, by=c("bm", "SNP")) %>%
+  mutate(P_expAdj = ifelse(SNP == "rs13409371" & is.na(P_expAdj), 0.17, P_expAdj))
+
+expAdj_comparison_tbl <- expAdj_comparison_df %>%
+  mutate(meets_threshold = P_expAdj < vqtl_bonferroni) %>%
+  group_by(meets_threshold) %>%
+  summarise(n = n()) %>%
+  mutate(frac = n / sum(n))
+```
+
+* After adjustment for all significant EWIS exposures, a vQTL sensitivity meta-analysis revealed that of the primary `r nrow(primary_vqtl_df)` significant vQTL-biomarker pairs, `r sum(expAdj_comparison_df$P_expAdj < vqtl_bonferroni)` (`r round(sum(expAdj_comparison_df$P_expAdj < vqtl_bonferroni) / nrow(primary_vqtl_df) * 100, 1)`%) remained significant.
+
+```{r pooled-ancestry-vqtl}
+pooled_alt_df <- read_tsv("../../data/processed/vqtl_ss/alt_log_all_vqtl_merged_nom") %>%
+  mutate(CHR = as.character(CHR))
+
+vqtl_ma_vs_pooled_plt_df <- inner_join(
+  vqtl_list$alt_log$MA,
+  pooled_alt_df,
+  by="SNP", suffix=c("_MA", "_pooled")
+) %>%
+  select(SNP, P_MA, P_pooled) %>%
+  mutate_at(vars(P_MA, P_pooled), ~pmax(., 1e-300)) %>%
+  filter(P_MA < vqtl_bonferroni | P_pooled < vqtl_bonferroni)
+
+vqtl_ma_vs_pooled_plt <- vqtl_ma_vs_pooled_plt_df %>%
+  ggplot(aes(x=-log10(P_MA), y=-log10(P_pooled))) +
+  geom_point(alpha=0.7, size=0.7) +
+  geom_abline(slope=1, intercept=0, linetype="dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x=expression(-log[10](italic(p))*" from ALT meta-analysis"),
+       y=expression(-log[10](italic(p))*" from ALT pooled analysis")) +
+  theme_bw()
+
+vqtl_ma_vs_pooled_qq <- with(filter(vqtl_ma_vs_pooled_plt_df, P_MA > 1e-150), {
+  qqplot(x=-log10(P_MA), y=-log10(P_pooled))
+  abline(a=0, b=1)
+})
+```
+
+## Misc vQTL
+
+```{r alt-manhattan, cache=2, dependson="load-data", fig.width=5, fig.asp=0.6, out.width="80%", include=F}
+alt_mh_thresh <- 100
+alt_me_nom <- filter(me_list$alt_log$MA, P < 0.01, P >= 1e-5)$SNP
+alt_me_sugg <- filter(me_list$alt_log$MA, P < 1e-5, P >= 5e-8)$SNP
+alt_me_gw <- filter(me_list$alt_log$MA, P < 5e-8)$SNP
+alt_vqtl_gw <- filter(vqtl_list$alt_log$MA, P < 5e-8)$SNP
+alt_mh_data <- bind_rows(list(vqtl=vqtl_list$alt_log$MA, 
+                              me=me_list$alt_log$MA), 
+                         .id="source")  %>%
+  filter(!is.na(P)) %>%
+  mutate(P = ifelse(P == 0, min(1e-300, min(P[P != 0], na.rm=T)), P),  # Remove P = 0
+         nlp = -log10(P)) %>%
+  mutate(nlp = pmin(nlp, alt_mh_thresh)) %>%
+  mutate(color = factor(case_when(
+    source == "vqtl" ~ CHR,
+    SNP %in% alt_vqtl_gw ~ "vqtl_gw",
+    TRUE ~ CHR
+  ), levels=c(1:22, "vqtl_gw")))
+
+# Trim points in crowded regions (credit to RaMWAS package for code snippet)
+yfac = as.integer(alt_mh_data$nlp * 100) + 1L
+yorder = sort.list(yfac)
+yfac <- factor(yfac, levels=as.character(seq_len(max(yfac))))
+ygroup <- split(seq_along(yfac), yfac)
+for (i in seq_along(ygroup)) {
+  if (length(ygroup[[i]]) > 300) {
+    ygroup[[i]] <- sample(ygroup[[i]], size=300, replace=F)
+  }
+}
+keep <- unlist(ygroup, use.names=FALSE)
+
+alt_mh_data <- alt_mh_data %>%
+  select(SNP, CHR, POS, nlp, source, color) %>%
+  dplyr::slice(keep) %>%
+  mutate(POS = as.numeric(as.character(POS)),
+         CHR = factor(CHR, levels=1:22)) %>%
+  arrange(CHR, POS) %>%
+  mutate(pos_idx = seq(1, nrow(.)))
+
+chr_lengths <- sapply(1:22, function(chr) with(alt_mh_data, max(POS[CHR == chr])))
+chr_start_pos <- cumsum(chr_lengths) - chr_lengths
+
+alt_mh_data <- alt_mh_data %>%
+  mutate(x_coord = chr_start_pos[CHR] + POS) %>%
+  arrange(as.integer(color), nlp)
+
+lims <- alt_mh_data %>%
+  group_by(CHR) %>%
+  summarise(avg_coord = (min(x_coord) + max(x_coord)) / 2)
+
+mh_cols <- setNames(
+  c(rep(c("#999999", "#555555"), length.out=22),  # Gray/dark gray for alternating chromosomes
+    brewer.pal(4, "Dark2")),
+  c(levels(factor(lims$CHR)),
+    "me_nom", "me_sugg", "me_gw", "vqtl_gw")
+)
+
+alt_p1 <- ggplot() +
+  geom_point(data=filter(alt_mh_data, source == "vqtl"), 
+             aes(x=x_coord, y=nlp, color=color), 
+             size=0.6, alpha=1) +
+  geom_hline(yintercept=-log10(vqtl_bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  scale_y_continuous(limits=c(2, alt_mh_thresh), expand=c(0, 0),
+                     name=expression(-log[10](italic(p))*" for vQTL effect")) +
+  scale_colour_manual(values=mh_cols) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_text(vjust = -1.5),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank())
+
+alt_p2 <- ggplot() +
+  geom_point(data=filter(alt_mh_data, source == "me"), 
+             aes(x=x_coord, y=nlp, color=factor(color)), 
+             size=0.75, alpha=1) +
+  geom_hline(yintercept=-log10(vqtl_bonferroni), linetype="dashed", color="black") + 
+  scale_x_continuous(breaks=lims$avg_coord[c(1:16, 18, 20, 20, 22)], 
+                     labels=c(1:16, 18, 20, 20, 22), 
+                     expand=c(0,0)) +
+  scale_colour_manual(values=mh_cols) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.minor=element_blank(),
+        panel.grid.major.x=element_blank(),
+        legend.position=c(0.2, 0.2)) +
+  scale_y_reverse(limits=c(alt_mh_thresh, 0), expand=c(0, 0),
+                  name=expression(-log[10](italic(p))*" for main effect"))
+
+alt_legend <- get_legend(
+  ggplot(filter(alt_mh_data, grepl("vqtl_", color))) +
+    geom_point(aes(x=x_coord, y=nlp, color=color)) +
+    scale_color_manual(name="", values=tail(mh_cols, 1),
+                         labels="vQTL P < 5e-8")
+)
+
+alt_plts <- plot_grid(alt_p1 + guides(color=F), 
+                      alt_p2 + guides(color=F), 
+                      align='v', nrow=2, rel_heights=c(5, 5))
+plot_grid(alt_plts, alt_legend, ncol=2, rel_widths=c(6, 1))
+```
+
+```{r alt-novel-loci, include=F}
+vqtl_me_overlaps$alt_log %>%
+  group_by(group_index_var) %>%
+  filter(!any(source == "me")) %>%
+  ungroup() %>%
+  select(index_var, P, Dir, HetP) %>%
+  mutate(P = as.character(signif(P, digits=2)),
+         HetP = as.character(signif(HetP, digits=2))) %>%
+  arrange(P) %>%
+  setNames(c("Index variant", "P-vQTL", "Effect signs", "P-heterogeneity")) %>%
+  kable(caption="\"Novel\" ALT vQTL loci (without a genetic main effect)") %>%
+  kable_styling()
+```
+
+# EWIS results
+
+```{r variable-info}
+data_codings <- read_csv("../../opt/PHESANT/variable-info/data-coding-ordinal-info-nov2019-update.txt")
+med_coding <- read_tsv("../../data/raw/ukb_medication_coding.tsv")
+illness_coding <- read_tsv("../../data/raw/ukb_illness_coding.tsv")
+
+variable_info <- read_tsv("../../data/processed/phesant_phenos/ewis_variable_info.tsv") %>%
+  select(FieldID, Category, coding=DATA_CODING, Path, Field, EXCLUDED) %>%
+  separate(Path, into=paste0("Category_Level_", 1:6), sep=" > ", remove=F) %>%
+  mutate(exp_group = case_when(
+    (  # Define psychosocial factors
+      Category_Level_2 == "Mental health" | 
+        Category_Level_3 == "Psychosocial factors"
+    ) ~ "Psychosocial factors",
+    (  # Define health and medical history
+      Category_Level_2 == "Digestive health" |
+      Category_Level_3 %in% c("Health and medical history", "Family history",
+                              "Medical information")
+    ) ~ "Health and medical history", 
+    (  # Define lifestyle and environment
+      Category_Level_2 %in% c("Local environment", "Work environment",
+                              "Diet by 24-hour recall", 
+                              "Physical activity measurement")  |
+        Category_Level_3 %in% c("Lifestyle and environment", 
+                                "Residential air pollution")
+    ) ~ "Lifestyle and environment", 
+    Category_Level_2 == "Physical measures" ~ "Physical measures",  # Define physical measures
+    Category_Level_2 == "Assay results" ~ "Miscellaneous",  # Because most assays (blood) are not used
+    Category_Level_3 == "Medical conditions" ~ "Medical conditions",  # Define medical conditions
+    Category_Level_3 == "Medications" ~ "Medications",  # Define medications
+    (  # Define sociodemographics
+      Category_Level_3 %in% c("Sociodemographics", 
+                              "Indices of Multiple Deprivation") |
+        Field == "Townsend deprivation index at recruitment" |
+        Field == "UK Biobank assessment centre"
+    ) ~ "Sociodemographics",
+    (
+      Category_Level_2 %in% c("Cognitive function", "Cognitive function online") 
+    ) ~ "Cognitive function",  # Define cognitive function
+    TRUE ~ "Miscellaneous"  # Everything else is miscellaneous
+  )) %>%
+  mutate(FieldID = as.character(FieldID))
+
+exp_groups <- c("Sociodemographics", "Lifestyle and environment", 
+                "Physical measures", "Psychosocial factors", 
+                "Health and medical history", "Medical conditions", 
+                "Medications", "Miscellaneous")
+exp_group_colors <- brewer.pal(10, "Paired")[c(8:7, 4:1, 10:9)]
+```
+
+```{r load-ewis-data, cache=2}
+exposures <- scan("../../data/processed/ewis/ewis_phenotype_list.txt", 
+                  what=character())
+
+ewis_df_raw <- fread("../../data/processed/ewis/ewis_ma_results_nom.csv",
+                     data.table=F, stringsAsFactors=F)
+```
+
+```{r process-primary-ewis, cache=2}
+n_eff_exposures <- 1156.2
+ewis_bonferroni <- 0.05 / nrow(primary_vqtl_df) / n_eff_exposures
+ewis_bonferroni_gw <- 0.05 / (n_eff_bm * 1000000) / n_eff_exposures
+
+# Subset to only the relevant variant-trait combos from meta-analysis
+ewis_df <- ewis_df_raw %>%
+  inner_join(primary_vqtl_df, by=c("SNP", "bm")) %>%  # Subset to significant vQTL pairs
+  separate(exposure, into=c("FieldID", "level"), remove=FALSE) %>%
+  mutate(level = as.integer(recode(level, age="21022", sex="31"))) %>%
+  inner_join(variable_info, by="FieldID") %>%  # Merge in variable info
+  mutate(Field = case_when(
+    FieldID == 20002 ~ illness_coding$meaning[match(level, illness_coding$coding)],
+    FieldID == 20003 ~ med_coding$meaning[match(level, med_coding$coding)],
+    TRUE ~ Field
+  )) %>%
+  mutate(exp_group = factor(exp_group, levels=exp_groups))
+
+sig_ewis_df <- filter(ewis_df, P < ewis_bonferroni)
+```
+
+* `r sum(is.na(variable_info$EXCLUDED))` variables were included as PHESANT input.
+* `r length(exposures)` variables were present in the PHESANT output, corresponding to `r n_eff_exposures` effective exposures.
+
+```{r write-ewis-cmdkp}
+ewis_df %>%
+  filter(P < 0.01) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  mutate_at(vars(contains("Allele")), toupper) %>%
+  arrange(P) %>%
+  select(SNP, CHR, POS, exposure, bm, Allele2, Allele1, Beta, P, Field, exp_group) %>%
+  write_csv("../../data/processed/cmdkp/ewis_metaanalysis_p0.01.csv")
+```
+
+## Considerations
+
+* Due to correlations between biomarkers and between exposures, it may be that the number of "effective" tests is substantially lower than the number of actual tests. We can estimate this number using the eigenvalues from PCA on the phenotype or exposure matrix as the square of summed eigenvalues divided by the sum of squared eigenvalues (Bretherton et al. 1999). This gives the following number of effective variables:
+    - Biomarkers: `r n_eff_bm` (of 20)
+    - Exposures: `r n_eff_exposures` (of 2380)
+    * The naive multiple testing threshold would be 0.05 / 1000000 / 20 / 2380 = 1.1e-12. Using the number of effective biomarkers and exposures instead, it would change to 0.05 / 1000000 / `r n_eff_bm` / `r n_eff_exposures` = `r signif(0.05 / 1000000 / n_eff_bm / n_eff_exposures, 3)`. (Note: this is still more conservative than the approach used here, which corrects for the number of vQTLs tested rather than for all genome-wide common variants.)
+
+## High-level summaries
+
+The following plot contains all p-values with p < 0.05, across all exposures and vQTL-biomarker pairs. The dotted line represents a Bonferroni-corrected p-value of 0.05 / (`r nrow(primary_vqtl_df)` variant-biomarker combinations) / (`r n_eff_exposures` exposures) = `r signif(ewis_bonferroni, 3)`. 
+
+* `r nrow(sig_ewis_df)` total interactions were detected, involving `r length(unique(sig_ewis_df$exposure))` unique exposures, `r length(unique(sig_ewis_df$SNP))` unique SNPs, `r length(unique(sig_ewis_df$bm))` unique biomarkers, and `r nrow(distinct(sig_ewis_df, SNP, bm))` unique vQTL-biomarker pairs.
+* Without the vQTL analysis, the multiple testing threshold would be 0.05 / 1M effective variants / `r n_eff_bm` effective biomarkers / `r n_eff_exposures` = `r ewis_bonferroni_gw`. Of the interactions detected here, only `r sum(ewis_df$P < ewis_bonferroni_gw)` (`r round(sum(ewis_df$P < ewis_bonferroni_gw) / sum(ewis_df$P < ewis_bonferroni) * 100, 1)`%) pass this more stringent threshold.
+
+```{r ewis-manhattan, cache=2}
+ewis_mh_df <- ewis_df %>%
+  mutate(grp = exp_group,
+         P = pmax(P, 1e-300, na.rm=T)) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+
+ewis_mh_lims <- ewis_mh_df %>%
+  group_by(grp) %>%
+  summarise(x = (min(idx) + max(idx)) / 2)
+ewis_mh_plt <- ewis_mh_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_hline(yintercept=-log10(ewis_bonferroni), linetype="dashed", color="gray") +
+  geom_hline(yintercept=-log10(ewis_bonferroni_gw), linetype="dotted", color="gray") +
+  scale_x_continuous(breaks=ewis_mh_lims$x,
+                     labels=ewis_mh_lims$grp) + 
+  scale_y_log10() +
+  scale_color_manual(values=exp_group_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=45, hjust=1),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+```
+
+```{r ewis-summary-by-biomarker}
+ewis_bm_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(bm) %>%
+  summarise(n = n()) %>%
+  right_join(tibble(bm = biomarkers), by="bm") %>%
+  replace_na(list(n = 0)) %>%
+  arrange(desc(n))
+
+ewis_bm_summary %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  setNames(c("Biomarker", "# hits")) %>%
+  kable(caption="Summary of significant GEI hits at vQTL-biomarker pairs across biomarkers") %>%
+  kable_styling(full_width=FALSE)
+
+ewis_exp_group_summary <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(exp_group) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n))
+
+ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  group_by(bm, exp_group) %>%
+  summarise(n = n()) %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  mutate(bm = factor(bm, levels=ewis_bm_summary$bm,
+                     labels=biomarkers_pretty[match(ewis_bm_summary$bm, biomarkers)])) %>%
+  kable(caption="# of EWIS hits per biomarker/exposure group pair") %>%
+  kable_styling(full_width=FALSE)
+```
+
+* The number of significant interactions ranged from 0 to `r max(ewis_bm_summary$n)` per biomarker.
+
+```{r ewis-me-enrichment}
+vqtl_variant_MEs <- lapply(me_list, function(bm_MEs) {
+  filter(bm_MEs$MA, SNP %in% primary_vqtl_df$SNP)
+}) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, SNP, P_ME=P)
+
+ewis_counts_df <- sig_ewis_df %>%
+  select(bm, SNP, exposure, P_EWIS=P) %>%
+  mutate(num_ewis_hits = 1)
+ewis_me_enrichment_df <- vqtl_me_overlap_df %>%
+  select(bm, SNP=index_var, sig_ME=has_me) %>%
+  left_join(ewis_counts_df, by=c("bm", "SNP")) %>%
+  replace_na(list(num_ewis_hits=0)) %>%
+  group_by(bm, SNP, sig_ME) %>%
+  summarise(num_ewis_hits = sum(num_ewis_hits), .groups="drop") %>%
+  mutate(any_ewis_hits = num_ewis_hits > 0)
+ewis_me_counts_tbl <- with(ewis_me_enrichment_df, table(sig_ME, any_ewis_hits))
+ewis_me_enrichment_tbl <- ewis_me_enrichment_df %>%
+  group_by(sig_ME) %>%
+  summarise(frac_with_hit = sum(any_ewis_hits) / n())
+ewis_me_enrichment_chisq <- chisq.test(ewis_me_counts_tbl)
+```
+
+```{r export-significant-exposures}
+all_sig_exposures <- sig_ewis_df %>%
+  select(Field, exposure) %>%
+  distinct()
+write(all_sig_exposures$exposure, "../../data/processed/ewis/significant_exposures.txt")
+
+all_sig_variants <- sig_ewis_df %>%
+  select(SNP) %>%
+  distinct()
+write(all_sig_variants$SNP, "../../data/processed/ewis/significant_variants.txt")
+
+all_sig_variant_exposure_combos <- sig_ewis_df %>%
+  group_by(bm, SNP) %>%
+  summarise(sig_exposures = paste(exposure, collapse=","))
+write_csv(all_sig_variant_exposure_combos, "../../data/processed/ewis/significant_variant_exposure_combos.csv")
+
+write(ewis_bonferroni, "../../data/processed/ewis/significance_threshold.txt")
+
+saveRDS(sig_ewis_df, "../../data/processed/ewis/significant_ewis_hits.rds")
+
+save("ewis_df", "sig_ewis_df", "primary_vqtl_clumps_df", "gene_annots",
+     file="../../data/processed/ewis/chord_plot_objects.RData")
+```
+
+### Independence of EWIS hits
+
+```{r independent-interactions}
+sig_ewis_locusPruned_df <- sig_ewis_df %>% 
+  inner_join(primary_vqtl_clumps_df, by=c("SNP"="index_var", "bm"))
+
+indep_hits <- read_csv("../../data/processed/ewis/conditional_analysis/independent_hits.csv")
+```
+
+* The `r nrow(distinct(sig_ewis_df, SNP, bm))` distinct vQTL-biomarker pairs supporting interactions are found within `r length(unique(sig_ewis_locusPruned_df$group_index_var))` independent loci. 
+* After iterative regressions conditioning on top exposure(s) for each vQTL-biomarker pair with significant EWIS hits, we can trim the `r nrow(sig_ewis_df)` EWIS hits down to `r sum(indep_hits$n_sig)` "independent" hits. If we use a nominal (rather than experiment-wide) threshold for the significance of the "secondary" signals (i.e., secondary exposures), we get `r sum(indep_hits$n_sig_nom)` independent hits.
+
+## vQTL versus ME variants
+
+```{r load-me-ewis, cache=2}
+ewis_ME_df_raw <- fread("../../data/processed/ewis/ewis_ME_ma_results_nom.csv",
+                        select=c("bm", "SNP", "exposure", "P"),
+                        data.table=F, stringsAsFactors=F)
+
+ewis_ME_df <- ewis_ME_df_raw %>%
+  inner_join(primary_ME_df, by=c("SNP", "bm")) %>%  # Subset to significant vQTL pairs
+  separate(exposure, into=c("FieldID", "level"), remove=FALSE) %>%
+  mutate(level = as.integer(recode(level, age="21022", sex="31"))) %>%
+  inner_join(variable_info, by="FieldID") %>%  # Merge in variable info
+  mutate(Field = case_when(
+    FieldID == 20002 ~ illness_coding$meaning[match(level, illness_coding$coding)],
+    FieldID == 20003 ~ med_coding$meaning[match(level, med_coding$coding)],
+    TRUE ~ Field
+  )) %>%
+  mutate(exp_group = factor(exp_group, levels=exp_groups))
+```
+
+```{r vqtl-versus-me-ewis-enrichment}
+vqtl_ewis_enrich_df <- primary_vqtl_df %>%
+  select(bm, SNP) %>%
+  crossing(exposure = exposures) %>%
+  left_join(select(ewis_df, bm, SNP, exposure, P), by=c("bm", "SNP", "exposure")) %>%
+  replace_na(list(P=0.5))
+
+ME_ewis_enrich_df <- primary_ME_df %>%
+  select(bm, SNP) %>%
+  crossing(exposure = exposures) %>%
+  left_join(select(ewis_ME_df, bm, SNP, exposure, P), by=c("bm", "SNP", "exposure")) %>%
+  replace_na(list(P=0.5))
+
+# Compare at the level of SNP-biomarker-exposure triplet possibilities
+ewis_enrich_triplet_df <- bind_rows(
+  list(vqtl=vqtl_ewis_enrich_df, ME=ME_ewis_enrich_df), .id="variant_source"
+) %>%
+  mutate(significant_GEI = P < ewis_bonferroni)
+ewis_enrich_triplet_tbl <- with(ewis_enrich_triplet_df, 
+                                table(variant_source, significant_GEI))
+ewis_enrich_triplet_counts <- ewis_enrich_triplet_df %>%
+  group_by(variant_source, significant_GEI) %>%
+  summarise(n = n(), .groups="drop_last") %>%
+  mutate(total_tests = sum(n),
+         frac_sig_GEI = round(n / total_tests, 5)) %>%
+  ungroup()
+
+# Compare at the level of SNP-biomarker pairs (any significant GEI yes/no)
+ewis_enrich_snpBm_df <- ewis_enrich_triplet_df %>%
+  group_by(variant_source, bm, SNP) %>%
+  summarise(any_significant_GEI = any(significant_GEI))
+ewis_enrich_snpBm_tbl <- with(ewis_enrich_snpBm_df, 
+                                table(variant_source, any_significant_GEI))
+ewis_enrich_snpBm_counts <- ewis_enrich_snpBm_df %>%
+  group_by(variant_source, any_significant_GEI) %>%
+  summarise(n = n(), .groups="drop_last") %>%
+  mutate(total_tests = sum(n),
+         frac_sig_GEI = round(n / total_tests, 5)) %>%
+  ungroup()
+```
+
+```{r vqtl-plus-me-ewis-results}
+both_ewis_df <- full_join(
+  select(sig_ewis_df, bm, SNP, exposure, Field, exp_group, P_from_vQTL=P),
+  select(filter(ewis_ME_df, P < ewis_bonferroni), 
+         bm, SNP, exposure, Field, exp_group, P_from_ME=P),
+  by=c("bm", "SNP", "exposure", "Field", "exp_group")
+)
+```
+
+## Ancestry-specific results
+
+### Ancestry breakdown of meta-analysis hits
+
+```{r load-all-ancestry-specific, cache=2}
+ewis_anc_all_df <- fread(paste("../../data/processed/ewis/ewis_anc_results_nom.csv"),
+                         data.table=F, stringsAsFactors=F)
+```
+
+```{r MA-ancestry-specific, cache=2, include=F}
+ewis_MA_anc_df <- left_join(
+  filter(ewis_df, P < ewis_bonferroni),  # Significant hits from meta-analysis
+  filter(ewis_anc_all_df, P < 0.05),  # Nominal ancestry-specific hits
+  by=c("SNP", "bm", "exposure"), suffix=c("_MA", "_AS")
+)
+ewis_MA_anc_df %>%
+  mutate(allele_flip = case_when(  # Needed because METAL sometimes flips REF/ALT alleles
+    toupper(Allele1_MA) == Allele1_AS & toupper(Allele1_MA) == Allele1_AS ~ FALSE,
+    toupper(Allele1_MA) == Allele2_AS & toupper(Allele2_MA) == Allele1_AS ~ TRUE,
+    TRUE ~ as.logical(NA)
+  )) %>%
+  filter(sign(Beta_MA) == ifelse(allele_flip, -sign(Beta_AS), sign(Beta_AS))) %>%
+  group_by(bm, exposure, SNP) %>%
+  summarise(
+    n = n(),
+    category = case_when(
+      all(is.na(anc)) ~ "None with p < 0.05",
+      n() > 1 ~ "Multi-ancestry signal",
+      all(anc == "EUR") ~ "EUR only",
+      all(anc == "AFR") ~ "AFR only",
+      all(anc == "EAS") ~ "EAS only",
+      all(anc == "SAS") ~ "SAS only",
+      TRUE ~ "Non-EUR",
+    )
+  ) %>%
+  group_by(category) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  setNames(c("Category", "# hits")) %>%
+  kable(caption="Ancestry-specific nominal signals (p < 0.05) underlying meta-analysis hits") %>%
+  kable_styling(full_width=F)
+```
+
+### Additional ancestry-specific hits
+
+```{r load-data-ancestry}
+ancestries <- c("EUR", "AFR", "EAS", "SAS")
+
+ancestry_vqtl_df <- vqtl_df %>%
+  filter(ancestry != "MA",
+         P_vqtl < vqtl_bonferroni) %>%
+  dplyr::rename(vqtl_ancestry = ancestry)
+
+anc_bonferroni <- 0.05 / nrow(ancestry_vqtl_df) / n_eff_exposures
+
+ewis_anc_df <- ewis_anc_all_df %>%
+  inner_join(ancestry_vqtl_df, by=c("SNP", "bm"))
+```
+
+```{r nonMA-ancestry-specific}
+ewis_nonMA_anc_df <- anti_join(  # Remove all hits from meta-analysis
+  filter(ewis_anc_df, P < anc_bonferroni),
+  filter(ewis_df, P < ewis_bonferroni),
+  by=c("SNP", "bm", "exposure")
+)
+
+ewis_nonMA_anc_df %>%
+  group_by(bm, exposure, SNP) %>%
+  summarise(category = case_when(
+    all(is.na(anc)) ~ "None with p < 0.05",
+    n() > 1 ~ "Multi-ancestry signal",
+    all(anc == "EUR") ~ "EUR only",
+    all(anc == "AFR") ~ "AFR only",
+    all(anc == "EAS") ~ "EAS only",
+    all(anc == "SAS") ~ "SAS only",
+    TRUE ~ "Non-EUR"
+  ), .groups="drop") %>%
+  group_by(bm, category) %>%
+  summarise(n = n(), .groups="drop") %>%
+  ungroup() %>%
+  arrange(desc(n)) %>%
+  pivot_wider(names_from="category", values_from="n", values_fill=list(n=0)) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  select(Biomarker=bm, everything()) %>%
+  kable(caption="Ancestry-specific hits not found in the meta-analysis") %>%
+  kable_styling(full_width=F)
+```
+
+# Vignettes
+
+```{r prep-vignettes}
+rm_outliers <- function(x) {
+  # Remove outliers (outside of 5 SDs from the mean)
+  ifelse(findInterval(x, mean(x, na.rm=T) + c(-5, 5) * sd(x, na.rm=T)) == 1,
+         x, NA
+  )
+}
+
+covariate_df <- eur_phenos %>%
+  select(id, sex, bmi, age, paste0("PC", 1:10))
+
+vqtl_vignette_df <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  select(SNP, bm, FieldID, Field, exp_group, P) %>%
+  inner_join(select(vqtl_merged, bm, SNP, P_vqtl=P, CHR, POS), by=c("bm", "SNP")) %>%
+  inner_join(select(me_merged, bm, SNP, P_me=P), by=c("bm", "SNP")) %>%
+  left_join(gene_annots, by=c("CHR", "POS")) %>%
+  select(SNP, gene, bm, Field, exp_group, P, P_vqtl, P_me)
+```
+
+```{r all-snp-ewis-plots}
+make_ewis_plt <- function(my_bm, my_SNP, ewis_df) {
+  plt_df <- ewis_df %>%
+    filter(bm == my_bm, SNP == my_SNP) %>%
+    mutate(grp = exp_group) %>%
+    arrange(grp, desc(P)) %>%
+    mutate(idx = 1:nrow(.) / nrow(.))
+  plt_lims <- plt_df %>%
+    group_by(grp) %>%
+    summarise(x = mean(idx))
+  plt_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(plt_lims))
+  plt <- plt_df %>%
+    ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+    geom_point(size=0.75) +
+    geom_text(data=filter(ewis_mh_alt_adh1b_df, P < 1e-4), 
+              aes(label=Field), nudge_x=-0.05, nudge_y=0.05, 
+              color="black", size=2, angle=10) +
+    scale_x_continuous(breaks=ewis_mh_alt_adh1b_lims$x,
+                       labels=ewis_mh_alt_adh1b_lims$grp) + 
+    scale_color_manual(values=ewis_mh_alt_adh1b_colors, guide=F) + 
+    labs(x="", y=expression(-log[10](italic(p)))) +
+    theme(axis.text.x=element_text(angle=15, hjust=0.95),
+          panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+  plt
+}
+```
+
+```{r stratified-plot}
+make_strat_plot <- function(rsid, bm, exposure) {
+  df <- readRDS(paste0("../../data/processed/vignettes/",
+                       bm, "_", rsid, "_", exposure, "_EUR_df.rds")) %>%
+    mutate(genotype = factor(round(snp), levels=0:2),
+           raw_biomarker = exp(!!sym(bm))) %>%
+    filter(!is.na(exposure), !is.na(raw_biomarker))
+  df$strat_exposure <- if (length(unique(df$exposure)) <= 4) {
+    df$strat_exposure <- factor(df$exposure)
+  } else {
+    df$strat_expoure <- factor(cut(df$exposure, 
+                                   quantile(df$exposure, seq(0, 1, length.out=4), na.rm=TRUE),
+                                   include.lowest=TRUE))
+  }
+  strat_mean_df <- df %>%
+    group_by(genotype, strat_exposure) %>%
+    summarise(m = mean(raw_biomarker),
+              se = sd(raw_biomarker) / sqrt(n()),
+              n = n())
+  strat_mean_plt_expCentric <- strat_mean_df %>%
+    ggplot(aes(x=genotype, y=m, group=strat_exposure, color=strat_exposure)) +
+    geom_point(position=position_dodge(width=0.2)) +
+    geom_errorbar(aes(ymin=m - se, ymax=m + se), width=0.2,
+                  position=position_dodge(width=0.2)) +
+    scale_color_discrete(name=paste0("Exposure stratum\n(", exposure, ")")) +
+    labs(x=paste0("Genotype at ", rsid),
+         y=gsub("_log", "", bm, " (raw)"))
+  strat_mean_plt_genCentric <- strat_mean_df %>%
+    ggplot(aes(x=strat_exposure, y=m, group=genotype, color=genotype)) +
+    geom_point(position=position_dodge(width=0.2)) +
+    geom_errorbar(aes(ymin=m - se, ymax=m + se), width=0.2,
+                  position=position_dodge(width=0.2)) +
+    scale_color_discrete(name=paste0("Genotype at\n", rsid)) +
+    labs(x=paste0("Exposure stratum (", exposure, ")"),
+         y=gsub("_log", "", bm, " (raw)"))
+  plot_grid(strat_mean_plt_expCentric, strat_mean_plt_genCentric)
+}
+```
+
+## Triglyceride and anthropometric exposure interactions
+
+```{r export-tg-anthro-variants}
+sig_tg_ewis_df <- ewis_df %>%
+  filter(bm == "tg_log", 
+         P < ewis_bonferroni,
+         Category_Level_3 == "Anthropometry") %>%
+  select(SNP) %>%
+  distinct() 
+write(sig_tg_ewis_df$SNP, file="../../data/processed/ewis/tg_anthro_vignette_variants.txt")
+```
+
+```{r heatmaps}
+sig_tg_ewis_df <- ewis_df %>%
+  filter(bm == "tg_log", P < ewis_bonferroni, Category_Level_3 == "Anthropometry") %>%
+  mutate(Field = case_when(
+    FieldID == 23098 ~ "Impedance-based weight",
+    FieldID == 23104 ~ "Impedance-based body mass index (BMI)",
+    TRUE ~ Field
+  ))
+
+tg_snps <- c(
+  "rs738408", "rs1260326", "1:63038303_TGG_T", "rs2954038", "rs58946909", 
+  "rs3741298", "rs34954997", "rs102275", "rs139566989"
+)
+tg_snp_names <- c(
+  "rs738408 (PNPLA3)", "rs1260326 (GCKR)", 
+  "1:63038303_TGG_T (DOCK7/ANGPTL3)", "rs2954038 (TRIB1)", 
+  "rs58946909 (LPL)", "rs3741298 (ZNF259/APOA5)", 
+  "rs34954997 (APOC1)", "rs102275 (TMEM258/FADS1-2)",
+  "rs139566989 (LIPC)"
+)
+
+sig_tg_ewis_df_ext <- ewis_df_raw %>%
+  filter(bm == "tg_log", 
+         SNP %in% sig_tg_ewis_df$SNP, 
+         exposure %in% sig_tg_ewis_df$exposure) %>%
+  inner_join(distinct(select(sig_tg_ewis_df, exposure, Field)), by="exposure") %>%
+  select(bm, SNP, exposure, Field, Non_Effect_Allele=Allele2, Effect_Allele=Allele1, Beta, SE, P)
+
+anthroPC_df <- read_csv("../../data/processed/ewis/ewis_ma_results_anthroPCs.csv") %>%
+  filter(bm == "tg_log",
+         SNP %in% sig_tg_ewis_df$SNP) %>%
+  mutate(Field = paste0("Anthropometric ", exposure))
+
+tg_hmap_ewis_df <- bind_rows(list(ewis=sig_tg_ewis_df_ext, anthroPC=anthroPC_df),
+                             .id="source") %>%
+  mutate_at(vars(Non_Effect_Allele, Effect_Allele), tolower) %>%
+  group_by(SNP) %>%
+  mutate(flip_alleles = (Non_Effect_Allele != Non_Effect_Allele[exposure == 21001]) & 
+           (Effect_Allele != Effect_Allele[exposure == 21001])) %>%
+  ungroup() %>%
+  mutate(Beta = ifelse(flip_alleles, -Beta, Beta)) %>% 
+  mutate(z = Beta / SE) %>%
+  group_by(SNP) %>%
+  mutate(flip_bmi = z[exposure == 21001] < 0) %>%
+  ungroup() %>%
+  mutate(z = ifelse(flip_bmi, -z, z)) %>%
+  complete(SNP, Field, fill=list(z=0, source="ewis")) %>%  # Fills in missing EWIS p-values (p>0.05)
+  mutate(z = ifelse(abs(z) > 1.96, z, 0))  # For consistency of anthro PCs with EWIS cutoff above p=0.05
+
+tg_clust_df <- tg_hmap_ewis_df %>%
+  select(Field, SNP, z) %>%
+  distinct(Field, SNP, .keep_all=TRUE) %>%  # IN PRACTICE WE SHOULD ACTUALLY CHOOSE SPECIFIC FIELDS INSTEAD OF THIS
+  pivot_wider(names_from="SNP", values_from="z", values_fill=list(z=0))
+tg_clust_mat <- as.matrix(tg_clust_df[, -1])
+rownames(tg_clust_mat) <- tg_clust_df$Field
+tg_exp_clust <- hclust(dist(tg_clust_mat))
+tg_exp_clust_order <- rownames(tg_clust_mat)[tg_exp_clust$order]
+tg_snp_clust <- hclust(dist(t(tg_clust_mat)))
+tg_snp_clust_order <- colnames(tg_clust_mat)[tg_snp_clust$order]
+```
+
+```{r ukb-nmr-results}
+ukb_nmr_res_df <- read_csv("../../data/processed/vignettes/tg_anthro/ukbb_vqtl_tg_gxe_lmresults_20220203.csv") %>% 
+  mutate(exposure = ifelse(exposure == "Body mass index (BMI)", "bmi", exposure))
+
+tg_snp_map <- c(rs102275="rs102275 (FADS)", rs139566989="rs139566989 (LIPC)", "1:63038303_TGG_T"="1:63038303_TGG_T (ANGPTL3)")
+
+nmr_ordered <- c(
+  "Total Triglycerides",
+  "Triglycerides in Chylomicrons and Extremely Large VLDL", "Triglycerides in Very Large VLDL",
+  "Triglycerides in VLDL", "Triglycerides in Large VLDL", "Triglycerides in Medium VLDL", 
+  "Triglycerides in Small VLDL", "Triglycerides in Very Small VLDL",
+  "Triglycerides in IDL",
+  "Triglycerides in LDL", "Triglycerides in Large LDL",
+  "Triglycerides in Medium LDL", "Triglycerides in Small LDL",
+  "Triglycerides in HDL", "Triglycerides in Very Large HDL", "Triglycerides in Large HDL",
+  "Triglycerides in Medium HDL", "Triglycerides in Small HDL"
+)
+nmr_pretty <- c(
+  "Total TG",
+  "TG in Chylo. and Ex. Lg. VLDL", "TG in Very Large VLDL",
+  "TG in VLDL", "TG in Large VLDL", "TG in Medium VLDL", 
+  "TG in Small VLDL", "TG in Very Small VLDL",
+  "TG in IDL",
+  "TG in LDL", "TG in Large LDL",
+  "TG in Medium LDL", "TG in Small LDL",
+  "TG in HDL", "TG in Very Large HDL", "TG in Large HDL",
+  "TG in Medium HDL", "TG in Small HDL"
+)
+
+anthro_exp_map <- c(bmi="BMI", anthro_PC1="Anthropometric PC1", anthro_PC2="Anthropometric PC2")
+```
+
+```{r lipc-strat-plots}
+load("../../data/processed/vignettes/tg_anthro/ukbb_vqtl_nmr_plots_20211004.Rdata")
+
+bmi_tertiles <- round(quantile(data.df$bmi, seq(0, 1, length.out=4), na.rm=TRUE), 1)
+
+make_tg_strat_plot <- function(df, snp, exposure, outcome, outcome_label, nbin=3) {
+  f_id <- paste0("f.", dd$FieldID[dd$Field == outcome], ".0.0_adj")
+  
+  plt_df <- df %>%
+    mutate(mysnp = !!sym(snp), myexp = !!sym(exposure), myout = !!sym(f_id)) %>%
+    filter(!is.na(mysnp), !is.na(myexp), !is.na(myout)) %>%
+    mutate(mysnp = factor(round(mysnp)),
+           exposure_bin = cut(myexp, quantile(myexp, seq(0, 1, length.out=nbin + 1)), 
+                              right=FALSE, include.lowest=TRUE)) %>%
+    group_by(mysnp, exposure_bin) %>%
+    summarise(mn = mean(myout),
+              conf1 = t.test(myout)$conf.int[1],
+              conf2 = t.test(myout)$conf.int[2]) %>%
+    distinct() %>%
+    ungroup()
+  
+  bin_labels <- if (exposure == "bmi") c("<25.0", "25.0-28.6", ">28.6") else paste0("T", 1:3)
+  
+  plt_df %>%
+    ggplot(aes(x=mysnp, y=mn, group=exposure_bin, color=exposure_bin)) +
+    geom_point(position=position_dodge(width=0.4), size=2) +
+    geom_errorbar(aes(ymin=conf1, ymax=conf2), width=0, size=1,
+                  position=position_dodge(width=0.4)) + 
+    scale_color_jco(name="",
+                    labels=bin_labels) +
+    labs(x=tg_snp_map[snp], y=paste(outcome_label, "(INT)")) +
+    theme(legend.position="top")
+}
+```
+
+## ADH1B and alcohol
+
+```{r adh1b-alcohol-vignette, include=F}
+# Alcohol = field 1558 in ukb40167.tab
+adh1b_df <- readRDS("../../data/processed/vignettes/alt_log_rs1229984_1558_EUR_df.rds") %>%
+  mutate(genotype = factor(round(snp), levels=0:2, labels=c("CC", "CT", "TT")),
+         alt_log = rm_outliers(alt_log),
+         alc = case_when(
+           raw_exposure %in% 5:6 ~ "Never or special occasions only",
+           raw_exposure %in% 2:4 ~ "Less than once per day",
+           raw_exposure == 1 ~ "At least once per day",
+           TRUE ~ as.character(NA)
+         ),
+         alc = fct_relevel(alc, "Never or special occasions only",
+                           "Less than once per day")) %>%
+  filter(!is.na(alc), !is.na(alt_log)) %>%
+  inner_join(covariate_df, by="id") %>%
+  mutate(age_squared = age**2)
+
+# Is vQTL still valid?
+v1_vqtl_p <- read_tsv("../../data/processed/vignettes/alt_rs1229984_1558_EUR.vqtl")$P
+
+# Check various assumptions
+broom::tidy(lm(exp(alt_log) ~ snp, data=adh1b_df))
+broom::tidy(lm(alt_log ~ alc, data=adh1b_df))
+broom::tidy(lm(as.integer(alc) ~ snp, data=adh1b_df))
+
+# Form of alc-ALT relationship
+adh1b_df %>%
+  ggplot(aes(x=alc, y=alt_log)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(5, 50))
+
+with(adh1b_df, bartlett.test(log(alt_log), alc))
+with(adh1b_df, fligner.test(log(alt_log), alc))
+
+ewis_df %>%
+  filter(bm == "alt_log",
+         SNP == "rs1229984") %>%
+  select(Field, P, Dir) %>%
+  arrange(P) %>%
+  mutate(P = as.character(signif(P, 2))) %>%
+  dplyr::slice(1:10) %>%
+  kable(caption="Top EWIS results for ALT & rs1229984") %>%
+  kable_styling(full_width=F)
+
+adh1b_alc_lm <- lm(alt_log ~ snp * as.integer(alc) + sex + age + age_squared + 
+                     PC1 + PC2 + PC3 + PC4 + PC5, data=adh1b_df)
+adh1b_alc_withBMI_lm <- lm(alt_log ~ snp * as.integer(alc) + snp * bmi + sex + age + age_squared + 
+                             PC1 + PC2 + PC3 + PC4 + PC5, data=adh1b_df)
+
+lmtest::coeftest(adh1b_alc_lm, vcov = sandwich::vcovHC(adh1b_alc_lm))
+lmtest::coeftest(adh1b_alc_withBMI_lm, vcov = sandwich::vcovHC(adh1b_alc_withBMI_lm))
+```
+
+```{r adh1b-alcohol-primary-fig, fig.width=6, fig.asp=0.7, include=F}
+adh1b_vqtl_df <- lapply(vqtl_list, function(vl) filter(vl$MA, SNP == "rs1229984")) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, P)
+adh1b_me_df <- lapply(me_list, function(ml) filter(ml$MA, SNP == "rs1229984")) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, P)
+adh1b_vqtl_plt <- bind_rows(list(vqtl=adh1b_vqtl_df, me=adh1b_me_df), .id="type") %>%
+  mutate(nlp = pmin(-log10(P), 300),
+         bm = factor(bm, levels=biomarkers, labels=biomarkers_pretty),
+         type = factor(type, labels=c("Main effect", "vQTL"))) %>%
+  ggplot(aes(x=fct_rev(bm), y=nlp, color=type)) +
+  geom_point(position=position_dodge(width=0.3)) +
+  scale_fill_manual(values=brewer.pal(2, "Dark2"), name="") +
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  coord_flip() +
+  theme(legend.position=c(0.7, 0.3), legend.title=element_blank(),
+        legend.background=element_rect(color="gray"))
+
+ewis_mh_alt_adh1b_df <- ewis_df %>%
+  filter(bm == "alt_log", SNP == "rs1229984") %>%
+  mutate(grp = exp_group) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+ewis_mh_alt_adh1b_lims <- ewis_mh_alt_adh1b_df %>%
+  group_by(grp) %>%
+  summarise(x = mean(idx))
+ewis_mh_alt_adh1b_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(ewis_mh_alt_adh1b_lims))
+adh1b_alt_ewis_plt <- ewis_mh_alt_adh1b_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_text(data=filter(ewis_mh_alt_adh1b_df, P < 1e-4), 
+            aes(label=Field), nudge_x=-0.05, nudge_y=0.05, 
+            color="black", size=2, angle=10) +
+  scale_x_continuous(breaks=ewis_mh_alt_adh1b_lims$x,
+                     labels=ewis_mh_alt_adh1b_lims$grp) + 
+  scale_color_manual(values=ewis_mh_alt_adh1b_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=15, hjust=0.95),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+
+adh1b_alc_strat_boxplt <- adh1b_df %>%
+  mutate(alt = exp(alt_log)) %>%
+  ggplot(aes(x=genotype, y=alt, fill=alc)) +
+  geom_boxplot(position=position_dodge()) +
+  coord_cartesian(ylim=c(5, 50)) +
+  scale_fill_discrete(name="Alcohol intake") +
+  labs(x=expression("Genotype at rs1229984"),
+       y="ALT (U/L)")
+
+adh1b_alc_strat_mean_df <- adh1b_df %>%
+  mutate(alt = exp(alt_log)) %>%
+  group_by(genotype, alc) %>%
+  summarise(m = mean(alt),
+            se = sd(alt) / sqrt(n()))
+adh1b_alc_strat_mean_plt <- adh1b_alc_strat_mean_df %>%
+  ggplot(aes(x=genotype, y=m, group=alc, color=alc)) +
+  geom_point(position=position_dodge(width=0.2)) +
+  geom_errorbar(aes(ymin=m - se, ymax=m + se), width=0.2,
+                position=position_dodge(width=0.2)) +
+  scale_color_discrete(name="Alcohol intake") +
+  labs(x=expression("Genotype at rs1229984"),
+       y="ALT (U/L)")
+
+adh1b_alc_primary_fig_right <- plot_grid(
+  adh1b_alt_ewis_plt, adh1b_alc_strat_boxplt, adh1b_alc_strat_mean_plt,
+  nrow=3, align="v", axis="lr"
+)
+plot_grid(adh1b_vqtl_plt, adh1b_alc_primary_fig_right, ncol=2, rel_widths=c(1, 2))
+```
+
+```{r adh1b-alcohol-supp-fig, fig.width=12, fig.asp=0.7, include=F}
+adh1b_vqtl_df <- vqtl_df %>%
+  filter(bm == "alt", SNP == "rs1229984", ancestry == "EUR") %>%
+  select(P_vqtl)
+adh1b_vqtl_expAdj_plt <- tibble(Adjustment=c("No exposure adjustment", "Exposure adjustment"),
+       P=c(adh1b_vqtl_df$P_vqtl, v1_vqtl_p)) %>%
+  mutate(nlp = pmin(-log10(P), 300)) %>%
+  ggplot(aes(x=fct_rev(Adjustment), y=nlp)) +
+  geom_bar(stat="identity", width=0.4) +
+  labs(x="", y=expression(-log[10](italic(p))))
+
+adh1b_alc_plt <- adh1b_df %>%
+  group_by(genotype, alc) %>%
+  summarise(n_alc_grp = n()) %>%
+  mutate(frac = n_alc_grp / sum(n_alc_grp)) %>% 
+  ggplot(aes(x=genotype, y=frac, fill=alc)) +
+  geom_bar(stat="identity") +
+  scale_fill_discrete(name="Alcohol intake") +
+  labs(x="Genotype at rs1229984", y="Fraction")
+
+alc_alt_plt <- adh1b_df %>%
+  ggplot(aes(x=alc, y=alt_log)) +
+  geom_boxplot() +
+  coord_cartesian(ylim=c(5, 50)) +
+  labs(x="Alcohol intake", y="ALT (U/L)")
+
+adh1b_alc_supp_fig_right <- plot_grid(
+  adh1b_alc_plt, alc_alt_plt, nrow=2, align="v", axis="lr"
+)
+plot_grid(adh1b_vqtl_expAdj_plt, adh1b_alc_supp_fig_right, ncol=2, rel_widths=c(1, 2))
+```
+
+```{r adh1b-alcohol-test-qualitative-gxe}
+adh1b_qualitative_gxe_tbl <- adh1b_df %>%
+  nest(-alc) %>%
+  mutate(strat_lm = map(data, function(d) {
+    lm(alt_log ~ snp + sex + age + age_squared + 
+         PC1 + PC2 + PC3 + PC4 + PCs5, data=d) %>%
+      broom::tidy() %>%
+      filter(term == "snp")
+  })) %>%
+  unnest(strat_lm)
+```
+
+The vQTL analysis showed a strong vQTL effect of rs1229984 on ALT. This is consistent with a GEI related to alcohol intake, but doesn't prove anything about alcohol's involvement. So, what do we see when subsetting the ALT EWIS results for rs1229984?
+
+* *ADH1B*-ALT vQTL
+* Specifics of the follow-up analysis:
+    - Alcohol was recoded into three categories (never/special occasions, <1/d, >=1/d)
+    - Raw ALT values were log-transformed
+    - Primary linear model covariates included: sex, age, age^2, and genetic PCs 1-10
+* There is very strong G-E correlation (a potential concern for GxE analysis), but no apparent mis-specification of the alcohol-ALT relationship (rough linearity of relationship + non-significant tests of differential variance of log(ALT) across alcohol groups) --> analysis should be valid
+* A linear model for log(ALT) approximately recapitulates the EWIS p-value
+* Additional adjustment for BMI modestly attenuates the interaction
+* vQTL p-value for log(ALT) from main scan: `r filter(vqtl_df, ancestry == "MA", SNP == "rs1229984", bm == "alt_log")$P_vqtl`
+* ME p-value for log(ALT) from main scan: 0.031 (* manually input *)
+* Interaction p-value for log(ALT) from EWIS: `r filter(ewis_df, FieldID == 1558, SNP == "rs1229984", bm == "alt_log")$P`
+
+```{r test-scaling-gxe, eval=F}
+mlest<-function(df,
+                start.pars=list(
+                    m=rnorm(1,sd=.05),
+                    pi0=rnorm(1,sd=.05),
+                    pi1=rnorm(1,sd=.05),
+                    lambda0=1+runif(1),
+                    lambda1=runif(1,max=.2)
+                ),
+                hess=FALSE, #if FALSE, compute empirical hessian
+                ctl.list=list(maxit=1000,reltol=sqrt(.Machine$double.eps)/1000)
+                ) {
+    ##
+    anal_vcov <- function(pars, df){
+        neg_hess <- function(pars,df) { #computes the negative hessian
+            for (nm in names(pars)) assign(nm,pars[[nm]])
+            mu <- m*df$E + pi0*df$g + pi1*df$g*df$E
+            sig <- sqrt((lambda0 + df$E*lambda1)^2)
+            ##
+            H <- matrix(data=NA, nrow=5, ncol=5)
+            # second partials wrt beta_0
+            H[1,1] <- sum(df$E^2*sig^(-2))
+            H[1,2] <- H[2,1] <- sum(df$E*df$g*sig^(-2))
+            H[1,3] <- H[3,1] <- sum(df$E^2*df$g*sig^(-2))
+            H[1,4] <- H[4,1] <- 2*sum(df$E*(df$y - mu)*sig^(-3))
+            H[1,5] <- H[5,1] <- 2*sum(df$E^2*(df$y - mu)*sig^(-3))
+            # second partials wrt pi_0
+            H[2,2] <- sum(df$g^2*sig^(-2))
+            H[2,3] <- H[3,2] <- sum(df$E*df$g^2*sig^(-2))
+            H[2,4] <- H[4,2] <- 2*sum(df$g*(df$y - mu)*sig^(-3))
+            H[2,5] <- H[5,2] <- 2*sum(df$E*df$g*(df$y - mu)*sig^(-3))
+            # second partials wrt pi_1
+            H[3,3] <- sum(df$E^2*df$g^2*sig^(-2))
+            H[3,4] <- H[4,3] <- 2*sum(df$E*df$g*(df$y - mu)*sig^(-3))
+            H[3,5] <- H[5,3] <- 2*sum(df$E^2*df$g*(df$y - mu)*sig^(-3))
+            # second partials wrt lambda_0
+            H[4,4] <- sum(3*(df$y - mu)^2*sig^(-4) - sig^(-2))
+            H[4,5] <- H[5,4] <- sum(3*df$E*(df$y - mu)^2*sig^(-4) - df$E*sig^(-2))
+            # second partials wrt lambda_1
+            H[5,5] <- sum(3*df$E^2*(df$y - mu)^2*sig^(-4) - df$E^2*sig^(-2))
+            return(H)
+        }
+        H <- neg_hess(pars, df)
+        vcov <- solve(H)
+        rownames(vcov) <- colnames(vcov) <- names(pars)
+        return(vcov)
+    }
+    ##
+    ll<-function(pars,df,pr) { #this is the likelihood function to be maximized 
+        for (nm in names(pars)) assign(nm,pars[[nm]])
+        mu<-m*df$E+
+            pi0*df$g+
+            pi1*df$g*df$E
+        sig<-sqrt((lambda0+df$E*lambda1)^2)
+        ##
+        d<-dnorm(df$y,mean=mu,sd=sig,log=TRUE) #sqrt(lambda0^2+df$E^2*lambda1^2+2*lambda0*lambda1*df$E))
+        tr<- -1*sum(d)
+        #print(pars)
+        #print(tr)
+        tr
+    }
+    gr<-function(pars,df) { #this is the gradient
+        for (nm in names(pars)) assign(nm,pars[[nm]])
+        mu<-m*df$E+
+            pi0*df$g+
+            pi1*df$g*df$E
+        sig<-sqrt((lambda0+df$E*lambda1)^2)
+        ##
+        dfdmu<-(df$y-mu)*sig^(-2)
+        dfdm<-sum(dfdmu*df$E)
+        dfdpi0<-sum(dfdmu*df$g)
+        dfdpi1<-sum(dfdmu*df$g*df$E)
+        dfdsigma <- (df$y - mu)^2*sig^(-3) - sig^(-1)
+        dfdlambda0 <- sum(dfdsigma)
+        dfdlambda1 <- sum(dfdsigma*df$E)
+        -1*c(dfdm,dfdpi0,dfdpi1,dfdlambda0,dfdlambda1)
+    }
+    ##
+    fit<-optim(par=start.pars,ll,
+               gr=gr,
+               df=df,
+               control=ctl.list,
+               hessian=hess
+               )
+    est<-c(fit$par)
+    if (hess) { #see https://stats.stackexchange.com/questions/27033/in-r-given-an-output-from-optim-with-a-hessian-matrix-how-to-calculate-paramet
+        vc<-solve(fit$hessian) #note, no -1 given that i am doing that directly in the above
+    } else {
+        test<-try(vc<-anal_vcov(est,df))
+        test<-class(test)
+        count<-1
+        while (test=='try-error' & count<50) {
+            pars<-list(m=rnorm(1,sd=.05),pi0=rnorm(1,sd=.05),pi1=rnorm(1,sd=.05),lambda0=1+runif(1),lambda1=runif(1,max=.2))
+            fit<-optim(pars,ll,
+                       gr=gr,
+                       df=df,
+                       control=ctl.list,
+                       hessian=TRUE
+                       )
+            test<-try(vc<-solve(fit$hessian))
+            test<-class(test)
+            count<-count+1
+        }
+        if (test=='try-error') return(list(est=est))
+    }
+    return(list(est=est,var=vc))
+}
+
+xi.test<-function(est,p.value=TRUE) {
+    testfun<-"b[2]*b[5]-b[3]*b[4]=0"
+    library(nlWaldTest)
+    if (p.value) {
+        nlWaldtest(coeff=est$est,Vcov=est$var,texts=testfun) 
+    } else {
+        nlConfint(coeff=est$est,Vcov=est$var,texts=sub("=0","",testfun,fixed=TRUE))
+    }
+}
+
+sim.data <- function(E,i=1,b0=.8,b1=.2,b2=0,b3=.05,h=sqrt(.6),a=.5,sigma=1,scaling=TRUE) {
+    N <- length(E)
+    G <- rnorm(N,0,1)
+    eps <- rnorm(N,0,sigma)
+    if (scaling){
+        e <- sqrt(1-h^2)
+        ystar <- h*G+e*eps
+        y <- a*E+(b0 + b1*E)*ystar
+    } else {
+        y <- b1*G+b2*E+b3*G*E+eps
+    }
+    df <- data.frame(E=E,y=y,g=G)
+    df
+}
+
+sim.data <- function(E,i=1,b0=.8,b1=.2,b2=0,b3=.05,h=sqrt(.6),a=.5,sigma=1,scaling=TRUE) {
+    N <- length(E)
+    G <- rnorm(N,0,1)
+    eps <- rnorm(N,0,sigma)
+    if (scaling){
+        e <- sqrt(1-h^2)
+        ystar <- h*G+e*eps
+        y <- a*E+(b0 + b1*E)*ystar
+    } else {
+        y <- b1*G+b2*E+b3*G*E+eps
+    }
+    df <- data.frame(E=E,y=y,g=G)
+    df
+}
+
+scaling_gxe_test_df <- select(adh1b_df, g=snp, y=alt_log_adj, E=exposure) %>%
+  filter(!is.na(y))
+
+scaling_gxe_est <- mlest(scaling_gxe_test_df, hess=FALSE)
+scaling_gxe_test <- xi.test(scaling_gxe_est)
+se<-sqrt(diag(scaling_gxe_est$var))
+z<-est$est/se
+2*pnorm(abs(z[5]),lower.tail=FALSE)
+
+
+# Test for a BMI/hsCRP example
+# scaling_gxe_test_df <- select(v5_df, g=snp, y=hscrp, E=exposure) %>%
+#   filter(!is.na(y))
+# 
+# scaling_gxe_est <- mlest(scaling_gxe_test_df, hess=FALSE)
+# scaling_gxe_test <- xi.test(scaling_gxe_est)
+# 
+# se<-sqrt(diag(scaling_gxe_est$var))
+# z<-est$est/se
+# 2*pnorm(abs(z[5]),lower.tail=FALSE)
+```
+
+
+## Triglyceride and waist circumference
+
+The top EWIS hit for a vQTL *without* an associated ME is rs738408 interacting with waist circumference to influence TG. We see the following SNP effects stratified by tertiles of WC, showing how the interaction is qualitative (allowing for the lack of ME).
+
+```{r tg-rs738408-WC}
+tg_rs738408_WC_df <- readRDS("../../data/processed/vignettes/tg_log_rs738408_48_EUR_df.rds")
+
+tg_rs738408_WC_df %>%
+  select(id, tg_log_adj, WC=exposure, SNP=snp) %>%
+  filter(!is.na(WC)) %>%
+  mutate(WC_tert = cut(WC, 
+                       quantile(WC, seq(0, 1, length.out=4), na.rm=TRUE), 
+                       include.lowest=TRUE, labels=paste0("T", 1:3))) %>%
+  nest(d=-WC_tert) %>%
+  rowwise() %>%
+  mutate(lm_res = list(filter(broom::tidy(lm(tg_log_adj ~ SNP, data=d)), term == "SNP"))) %>%
+  unnest(lm_res) %>%
+  arrange(WC_tert)
+```
+
+# Replication
+
+```{r replication-exports}
+vqtl_df %>%
+  filter(ancestry %in% c("EUR", "MA")) %>%
+  select(RSID=SNP, CHR, POS, REF, ALT, biomarker=bm, ancestry) %>%
+  write_csv("../../data/processed/wghs/vqtl_replication_variants.csv")
+
+ewis_bmi_df <- ewis_df %>%
+  filter(FieldID == 21001,
+         P < ewis_bonferroni) %>%
+  select(bm, SNP, P, REF=Allele1, ALT=Allele2, Beta_int=Beta, P_int=P)
+write_csv(ewis_bmi_df, "../../data/processed/wghs/bmi_interaction_replication_variants.csv")
+```
+
+```{r non-eur-vqtls}
+ma_vqtls_in_eur <- lapply(vqtl_list, function(d) filter(d$EUR, SNP %in% vqtl_df$SNP)) %>%
+  bind_rows(.id="bm") %>%
+  select(SNP, bm, P_EUR=P)
+anc_spec_vqtl_df <- vqtl_df %>%
+  left_join(ma_vqtls_in_eur, by="SNP", "bm")
+```
+
+## vQTL replication
+
+```{r vqtl-replication}
+wghs_df <- read_tsv("../../data/processed/wghs/WGHS_vqtl_replication_2022Feb4_5indelsappended_nodups_MAonly.txt") %>%
+  mutate(snp = gsub("^chr", "", snp),
+         biomarker = ifelse(biomarker %in% c("ldl_log", "chol_log", "apoB_log"),
+                            gsub("_log", "_statinadj_log", biomarker), biomarker))
+
+vqtl_variant_MEs <- lapply(me_list, function(bm_MEs) {
+  filter(bm_MEs$MA, SNP %in% vqtl_df$SNP)
+}) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, SNP, P_ME=P)
+
+vqtl_rep_df <- vqtl_df %>%
+  filter(P_vqtl < vqtl_bonferroni) %>%
+  group_by(SNP, bm) %>%
+  mutate(sig_EUR = any(ancestry == "EUR"),
+         sig_Other = any(!(ancestry %in% c("EUR", "MA")))) %>%
+  filter(ancestry == "MA") %>%
+  group_by(SNP) %>%
+  mutate(top_BM = which.min(P_vqtl)) %>%
+  ungroup() %>%
+  left_join(vqtl_variant_MEs, by=c("SNP", "bm")) %>%
+  inner_join(select(wghs_df, SNP=snp, bm=biomarker, P_rep=Levene_P), 
+             by=c("SNP", "bm"))
+
+vqtl_rep_corr <- cor(vqtl_rep_df$P_vqtl, vqtl_rep_df$P_rep, method="spearman")
+
+rep_bonferroni <- 0.05 / nrow(vqtl_rep_df)
+
+vqtl_rep_plt <- vqtl_rep_df %>%
+  select(SNP, bm, P_vqtl, P_ME, P_rep) %>%
+  pivot_longer(names_to="P_type", values_to="P", P_vqtl:P_ME) %>%
+  mutate(P_type = factor(P_type, levels=c("P_ME", "P_vqtl"),
+                         labels=c("Main effect", "vQTL"))) %>%
+  ggplot(aes(x=-log10(P), y=-log10(P_rep))) +
+  geom_point() +
+  geom_smooth(method="lm", se=FALSE) +
+  facet_wrap(~P_type) +
+  labs(x=expression(-log[10](italic(p))-primary),
+       y=expression(-log[10](italic(p)[vQTL])-replication))
+
+display_rep_summary <- function(df, thresh) {
+  cnt <- sum(df$P_rep < thresh)
+  pct <- round(cnt / nrow(df) * 100)
+  paste0(cnt, " (", pct, "%)")
+}
+
+vqtl_rep_summary_tbl <- tibble(
+  nominal = c(display_rep_summary(vqtl_rep_df, 0.05),
+              display_rep_summary(filter(vqtl_rep_df, sig_EUR), 0.05),
+              display_rep_summary(filter(vqtl_rep_df, sig_Other), 0.05)),
+  bonferroni = c(display_rep_summary(vqtl_rep_df, rep_bonferroni),
+                 display_rep_summary(filter(vqtl_rep_df, sig_EUR), rep_bonferroni),
+                 display_rep_summary(filter(vqtl_rep_df, sig_Other), rep_bonferroni))
+)
+p_nom_rep_chisq <- chisq.test(
+  x=c(sum(vqtl_rep_df$P_rep < 0.05), sum(vqtl_rep_df$P_rep >= 0.05)),  # Observed rep/non-rep
+  p=c(0.05, 0.95)  # Expected rep/non-rep probabilities
+)$p.value
+
+vqtl_rep_summary_tbl_by_bm <- vqtl_rep_df %>%
+  nest(-bm) %>%
+  filter(map_dbl(data, nrow) > 0) %>%
+  mutate(nom_rep = map_chr(data, function(d) display_rep_summary(d, 0.05)),
+         bonferroni_rep = map_chr(data, function(d) display_rep_summary(d, rep_bonferroni)),
+         p_nom_rep = map_dbl(data, function(d) chisq.test(
+           x=c(sum(d$P_rep < 0.05), 
+               sum(d$P_rep >= 0.05)),  # Observed rep/non-rep
+           p=c(0.05, 0.95)  # Expected rep/non-rep probabilities
+         )$p.value)
+  )
+
+vqtl_rep_summary_tbl
+vqtl_rep_summary_tbl_by_bm
+```
+
+* `r length(unique(vqtl_rep_df$SNP))` SNPs (`r nrow(vqtl_rep_df)` SNP-biomarker pairs) were available for potential replication of vQTLs in WGHS (TOPMed-imputed with imputation R-squared > 0.5)
+* SNPs present in WGHS but *not* top meta-analysis hits: `r paste(setdiff(wghs_df$snp, vqtl_rep_df$SNP), collapse=", ")`
+* p = `r signif(p_nom_rep_chisq, 4)` for proportion of nominal SNPs replicated
+* Spearman correlation of `r vqtl_rep_corr` between discovery and replication vQTL p-values
+
+## BMI GEI replication
+
+```{r ewis-bmi-replication}
+wghs_bmi_df <- read_delim("../../data/processed/wghs/WGHS_BMI_GxE_results_2022Feb4_noflipping_UKBtophitsonly_indelsappended_nodups.txt",
+                          delim=" ") %>%
+  select(SNP, bm, A1_WGHS=snp_coded_allele, A2_WGHS=snp_noncoded_allele,
+         Beta_rep=WGHS_beta_gxe, P_rep=WGHS_p_gxe) %>%
+  mutate(bm = ifelse(bm %in% c("chol_log", "apoB_log"), 
+                     gsub("_log", "_statinadj_log", bm), bm),
+         A1_WGHS = ifelse(A1_WGHS == "D", "C", A1_WGHS),
+         A2_WGHS = ifelse(A2_WGHS == "I", "CTTCG", A2_WGHS))
+
+ewis_bmi_rep_df <- ewis_df %>%
+  filter(FieldID == 21001) %>%
+  select(SNP, bm, A1_UKB=Allele1, A2_UKB=Allele2, Beta_int=Beta, P_int=P) %>%
+  mutate_at(vars(A1_UKB, A2_UKB), toupper) %>%
+  inner_join(wghs_bmi_df, by=c("SNP", "bm")) %>% 
+  mutate(flip_alleles = case_when(
+    (A1_WGHS == A1_UKB) & (A2_WGHS == A2_UKB) ~ FALSE,
+    (A1_WGHS == A2_UKB) & (A2_WGHS == A1_UKB) ~ TRUE,
+    TRUE ~ as.logical(NA)
+  )) %>%
+  mutate(Beta_rep = ifelse(flip_alleles, -Beta_rep, Beta_rep))
+
+ewis_bmi_rep_bonferroni <- 0.05 / nrow(ewis_bmi_rep_df)
+
+ewis_bmi_rep_plt <- ewis_bmi_rep_df %>%
+  ggplot(aes(x=-log10(P_int), y=-log10(P_rep))) +
+  geom_point()
+
+display_rep_summary <- function(df, thresh) {
+  cnt <- sum(df$P_rep < thresh)
+  pct <- round(cnt / nrow(df) * 100)
+  paste0(cnt, " (", pct, "%)")
+}
+
+ewis_bmi_rep_summary_tbl <- tibble(
+  nominal = c(display_rep_summary(ewis_bmi_rep_df, 0.05)),
+  bonferroni = c(display_rep_summary(ewis_bmi_rep_df, ewis_bmi_rep_bonferroni))
+)
+p_nom_ewis_bmi_rep_chisq <- chisq.test(
+  x=c(sum(ewis_bmi_rep_df$P_rep < 0.05), sum(ewis_bmi_rep_df$P_rep >= 0.05)),  # Observed rep/non-rep
+  p=c(0.05, 0.95)  # Expected rep/non-rep probabilities
+)$p.value
+
+ewis_bmi_rep_summary_tbl_by_bm <- ewis_bmi_rep_df %>%
+  nest(-bm) %>%
+  filter(map_dbl(data, nrow) > 0) %>%
+  mutate(nom_rep = map_chr(data, function(d) display_rep_summary(d, 0.05)),
+         bonferroni_rep = map_chr(data, function(d) display_rep_summary(d, ewis_bmi_rep_bonferroni)),
+         p_nom_rep = map_dbl(data, function(d) chisq.test(
+           x=c(sum(d$P_rep < 0.05), 
+               sum(d$P_rep >= 0.05)),  # Observed rep/non-rep
+           p=c(0.05, 0.95)  # Expected rep/non-rep probabilities
+         )$p.value)
+  )
+
+ewis_bmi_rep_summary_tbl
+ewis_bmi_rep_summary_tbl_by_bm
+```
+
+* When restricting to interactions using BMI (anthropometrically-measured) as the exposure, `r length(unique(ewis_bmi_rep_df$SNP))` SNPs (`r nrow(ewis_bmi_rep_df)` SNP-biomarker pairs) were available for replication of in WHGS (TOPMed-imputed with imputation R-squared > 0.5)
+* p = `r signif(p_nom_ewis_bmi_rep_chisq, 4)` for proportion of SNP-biomarker pairs replicated at nominal significance (for their BMI interaction) (`r ewis_bmi_rep_summary_tbl$nominal` out of `r nrow(ewis_bmi_rep_df)`)
+
+# Figures and Tables
+
+```{r figure-settings}
+theme_set(theme_bw())  # Somewhat more minimalist, no default gray background in plots
+```
+
+```{r vqtl-concept-viz, fig.width=2, fig.asp=1}
+set.seed(1)
+sim_df <- tibble(
+  gvec = rbinom(2000, 2, 0.5),
+  evec = rbinom(2000, 1, 0.5),
+  yvec = rnorm(2000, 1.5 * gvec * evec, 1) 
+) %>%
+  mutate(gvec=factor(gvec, labels=c("AA", "AB", "BB")),
+         evec=factor(evec, labels=c("Unexposed", "Exposed")))
+
+ggplot(sim_df, aes(x=gvec, y=yvec)) +
+  geom_boxplot() +
+  geom_jitter(aes(color=evec), alpha=0.5, width=0.1) +
+  scale_color_brewer(palette="Dark2", name="Environment") +
+  labs(x="Genotype", y="Phenotype") +
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_blank(),
+        panel.grid=element_blank(),
+        legend.position=c(0.15, 0.9), 
+        legend.background=element_rect(size=0.2, color="black"))
+
+ggplot(sim_df, aes(x=gvec, y=yvec)) +
+  geom_jitter(alpha=0.5, width=0.1) +
+  geom_boxplot() +
+  scale_color_brewer(palette="Dark2", name="Environment") +
+  labs(x="Genotype", y="Phenotype") +
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_blank(),
+        panel.grid=element_blank(),
+        legend.position=c(0.15, 0.9), 
+        legend.background=element_rect(size=0.2, color="black"))
+
+ggplot(sim_df, aes(x=gvec, y=yvec)) +
+  geom_jitter(aes(color=evec), alpha=0.5, width=0.1) +
+  scale_color_brewer(palette="Dark2", name="Environment") +
+  labs(x="Genotype", y="Phenotype") +
+  theme(axis.ticks.y=element_blank(), axis.text.y=element_blank(),
+        panel.grid=element_blank(),
+        legend.position=c(0.15, 0.88), 
+        legend.background=element_rect(size=0.2, color="black"))
+```
+
+```{r pop-description-table}
+summarize_continuous <- function(x) {
+  m <- format(round(mean(x, na.rm=TRUE), 1), nsmall=1)
+  s <- format(round(sd(x, na.rm=TRUE), 1), nsmall=1)
+  paste0(m, " (", s, ")")
+}
+
+biomarker_units <- c(
+  "U/L", "g/L", "U/L", "g/L", "g/L", "U/L", "mg/L", "mmol/L", "umol/L",
+  "mg/L", "umol/L", "U/L", "mmol/L", "mmol/mol", "mmol/L", "mmol/L", "nmol/L", 
+  "umol/L", "mmol/L", "mmol/L"
+)
+
+summ1 <- all_phenos %>%
+  group_by(ancestry) %>%
+  summarise(N = n(),
+            `Sex, % female` = round(sum(sex == 0) / n() * 100, 1),
+            `Age, years` = summarize_continuous(age),
+            `BMI, kg/m^2` = summarize_continuous(bmi))
+summ2 <- all_phenos %>%
+  group_by(ancestry) %>%
+  mutate_at(vars(biomarkers), exp) %>%
+  summarise_at(vars(biomarkers), summarize_continuous) %>%
+  setNames(
+    ifelse(names(.) %in% biomarkers,
+           paste0(biomarkers_pretty[match(names(.), biomarkers)],
+                  ", ", biomarker_units[match(names(.), biomarkers)]),
+           names(.))
+  )
+pop_description_mat <- t(inner_join(summ1, summ2, by="ancestry"))
+pop_description_tbl <- as.data.frame(pop_description_mat[-1, ]) %>%
+  rownames_to_column() %>%
+  as.data.frame() %>%
+  setNames(c("Ancestry", pop_description_mat[1, ]))
+pop_description_tbl %>%
+  write_csv("tables/pop_description.csv")
+pop_description_tbl %>%
+  kable(caption="Population description") %>%
+  kable_styling()
+```
+
+```{r biomarkers-table}
+ukb_biomarker_fields <- c(
+  alt = 30620, alb = 30600, alp = 30610, apoA = 30630, apoB = 30640, 
+  ast = 30650, hscrp = 30710, chol = 30690, creatinine = 30700, cysC = 30720, 
+  bilirubin_dir = 30660, ggt = 30730, glu = 30740, hba1c = 30750, 
+  hdl = 30760, ldl = 30780, lipA = 30790, bilirubin_tot = 30840, tg = 30870,
+  urea = 30670
+)
+biomarkers_full <- c(
+  "Alanine aminotransferase", "Albumin", "Alkaline phosphatase", 
+  "Apolipoprotein A", "Apolipoprotein B", "Aspartate aminotrasferase", 
+  "High-sensitivity C-reactive protein", "Total cholesterol", 
+  "Creatinine", "Cystatin C", "Direct bilirubin", "Gamma-glutamyl transferase", 
+  "Random glucose", "Glycated hemoglobin", "High-density lipoprotein cholesterol",
+  "Low-density lipoprotein cholesterol", "Lipoprotein A", "Total bilirubin", 
+  "Triglycerides", "Urea"
+)
+
+tibble(bm_full=biomarkers_full, bm_abbr=biomarkers_pretty, 
+       ukb_field=ukb_biomarker_fields, units=biomarker_units)
+
+bm_tbl <- tibble(
+  Biomarker = biomarkers_full,
+  Abbreviation = biomarkers_pretty,
+  Units = biomarker_units,
+  `UKB Field` = ukb_biomarker_fields
+)
+bm_tbl %>%
+  kable(caption = "Metabolic serum biomarkers used in this study") %>%
+  kable_styling(full_width = F)
+bm_tbl %>%
+  write_csv("tables/biomarker_table.csv")
+```
+
+```{r biomarker-histograms, fig.asp=1}
+phenos <- read_csv("../../data/processed/vqtl_phenos_EUR.csv")
+
+hist_list <- lapply(setNames(biomarkers, biomarkers), function(bm) {
+  ggplot(phenos, aes_string(x=paste0(bm, "_adj"))) +
+    geom_histogram(bins=30) +
+    labs(x=biomarkers_pretty[which(biomarkers == bm)], y="") +
+    theme(panel.grid=element_blank())
+})
+
+do.call(plot_grid, c(hist_list, ncol=4))
+```
+
+```{r vqtl-pleiotropy-outputs}
+vqtl_bm_overlap_df %>%
+  filter(n >= 4) %>%
+  arrange(desc(n)) %>%
+  setNames(c("Index variant", "Biomarkers")) %>%
+  kable(caption="Loci with vQTLs for at least 6 biomarkers") %>%
+  kable_styling()
+```
+
+```{r primary-vqtl-figure, fig.asp=0.7, fig.width=5.5}
+vqtl_effect_plt_df <- primary_vqtl_df %>%
+  mutate(CHR = as.character(CHR)) %>%
+  left_join(gene_annots, by=c("CHR", "POS")) %>%
+  replace_na(list(gene=" ")) %>%
+  mutate(P = ifelse(P_vqtl < 1e-300, 1e-300, P_vqtl),
+         nlp = -log10(P),
+         approx_nlp = round(nlp / 3)) %>%
+  arrange(desc(nlp)) %>%
+  mutate(bm = factor(bm, levels=biomarkers_ordered,
+                     labels=biomarkers_pretty[biomarkers_order]),
+         label = ifelse(nlp > 20, gene, "")) %>%
+  group_by(bm, P) %>%
+  mutate(label = paste(label, collapse=";")) %>%
+  ungroup()
+vqtl_effect_plt <- vqtl_effect_plt_df %>%
+  ggplot(aes(x=bm, y=nlp)) +
+  geom_point(aes(alpha=0.5), stroke=0.2, position=position_jitter(width=0.12, height=0)) +
+  scale_alpha_continuous(guide=FALSE) +
+  scale_x_discrete(expand=c(0.065, 0)) +
+  scale_y_log10(limits=c(-log10(vqtl_bonferroni), 315)) +
+  labs(x="", y=expression(-log[10](italic(p))*" for vQTL effect")) +
+  geom_text(aes(label=label), 
+            nudge_x=0.375, nudge_y=0.02, color="black", size=2, angle=15,
+            check_overlap=TRUE) +
+  theme(axis.text.x = element_text(angle=30, hjust=0.9))
+
+vqtl_pleiotropy_plt <- vqtl_bm_overlap_df %>%
+  ggplot(aes(x=n)) +
+  geom_bar() +
+  scale_x_continuous(breaks=seq(1, max(vqtl_bm_overlap_df$n))) +
+  labs(x="# biomarkers per vQTL locus", y="# loci")
+
+vqtl_per_bm_plt_df <- vqtl_me_overlap_tbl %>% 
+  arrange(desc(vqtls)) %>%
+  mutate(vqtl_with_me = vqtls - vqtl_only,
+         me_only = mes - vqtl_with_me) %>%
+  mutate(bm = factor(bm, levels=unique(bm), 
+                     labels=biomarkers_pretty[match(unique(bm), biomarkers)])) %>%
+  pivot_longer(c("vqtl_with_me", "vqtl_only", "me_only"), 
+               names_to="type", values_to="cnt") %>%
+  mutate(type=factor(type, levels=c("vqtl_only", "vqtl_with_me", "me_only")))
+vqtl_per_bm_plt <- vqtl_per_bm_plt_df %>%
+  filter(type != "me_only") %>%
+  ggplot(aes(x=bm, y=cnt, fill=type)) +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values=brewer.pal(10, "Paired")[c(6, 10, 2)], drop=FALSE,
+                    labels=c("vQTL only", "Shared vQTL and ME", "Main effect only")) +
+  scale_y_continuous(breaks=c(0, 20, 40, 60)) +
+  labs(x="", y="# of significant vQTLs") +
+  theme(axis.text.x=element_text(angle=30, hjust=0.9),
+        axis.title.x=element_blank(),
+        panel.grid=element_blank(),
+        legend.position=c(0.8, 0.65), legend.title=element_blank(),
+        legend.background=element_rect(color="black", size=0.2),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+me_per_bm_plt <- vqtl_per_bm_plt_df %>%
+  filter(type != "vqtl_only") %>%
+  ggplot(aes(x=bm, y=cnt, fill=fct_rev(type))) +
+  geom_bar(stat="identity") +
+  scale_fill_manual(values=brewer.pal(10, "Paired")[rev(c(6, 10, 2))], drop=FALSE,
+                    guide = FALSE) +
+  labs(x="", y="# of significant MEs") +
+  theme(axis.text.x=element_text(angle=45, hjust=0.9, size=6),
+        panel.grid=element_blank(),
+        plot.margin = unit(c(0, 0, 0, 0), "cm"))
+hits_per_bm_plt <- ggdraw() +
+  draw_plot(vqtl_per_bm_plt) +
+  draw_plot(me_per_bm_plt, x=0.18, y=0.4, width=0.45, height=0.5)
+
+top_panel <- plot_grid(vqtl_effect_plt, vqtl_pleiotropy_plt,
+                       ncol=2, rel_widths=c(3, 2), labels=c("a", "b"))
+right_panel <- plot_grid(vqtl_pleiotropy_plt + theme(plot.margin=unit(c(0.5, 0.5, 0, 0), "cm")), 
+                         hits_per_bm_plt + theme(plot.margin=unit(c(0.5, 0.5, 0, 0), "cm")), 
+                         nrow=2, 
+                         align="h", axis="lr",
+                         rel_heights=c(2, 3), labels=c("b", "c"))
+plot_grid(vqtl_effect_plt, right_panel, ncol=2, rel_widths=c(4, 5),
+          align="v", axis="bt",
+          labels=c("a", ""))
+```
+
+```{r vqtl-counts-tables}
+vqtl_counts_tbl <- vqtl_me_overlap_tbl %>%
+  mutate(GC_lambda_vqtl = vqtl_gc_lambdas[bm],
+         GC_lambda_me = me_gc_lambdas[bm],
+         bm = biomarkers_pretty[which(biomarkers == bm)],
+         pct_vqtl_with_me = ifelse(is.na(pct_vqtl_with_me), "NA", pct_vqtl_with_me)) %>%
+  select(bm, 
+         GC_lambda_vqtl, vqtls, vqtl_only, pct_vqtl_with_me,
+         GC_lambda_me, mes, pct_me_with_vqtl) %>%
+  setNames(c("Biomarker", 
+             "GC_lambda - vQTL", "# vQTLs", "# vQTLs w/out ME", "% vQTLs w/ ME",
+             "GC_lambda - ME", "# MEs", "% MEs w/ vQTL"))
+vqtl_counts_tbl %>%
+  write_csv("tables/vqtl_me_overlap_table.csv")
+vqtl_counts_tbl %>%
+  kable(caption="Summary of meta-analysis results and overlap with genetic main effects") %>%
+  kable_styling()
+
+anc_counts_tbl <- anc_overlap_tbl %>%
+  mutate(Biomarker = biomarkers_pretty[match(Biomarker, biomarkers)]) %>%
+  select(-`Multi-ancestry`)
+anc_counts_tbl %>%
+  write_csv("tables/anc_counts_table.csv")
+anc_counts_tbl %>%
+  kable(caption="vQTL counts per biomarker") %>%
+  kable_styling()
+```
+
+```{r top-vqtl-table}
+top_vqtl_tbl <- primary_vqtl_df %>%
+  mutate(CHR = as.character(CHR)) %>%
+  left_join(gene_annots, by=c("CHR", "POS")) %>%
+  left_join(vqtl_variant_MEs, by=c("bm", "SNP")) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)],
+         gene = ifelse(is.na(gene), "", gene)) %>%
+  arrange(P_vqtl) %>%
+  mutate_at(vars(P_vqtl, P_ME), ~case_when(
+    is.na(.) ~ ">0.01",
+    . < 1e-300 ~ "<1e-300",
+    TRUE ~ as.character(signif(., digits=3))
+  )) %>%
+  select(Biomarker=bm, `Index variant`=SNP, CHR, POS, REF, ALT,
+         P_vQTL=P_vqtl, P_ME, `Nearest gene`=gene)
+write_csv(top_vqtl_tbl, "tables/top_vqtls.csv")
+```
+
+```{r ancestry-specific-vqtl-table}
+anc_spec_vqtl_tbl <-  anc_specific_tbl %>%
+  mutate(CHR = as.character(CHR)) %>%
+  left_join(gene_annots, by=c("CHR", "POS")) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)],
+         gene = ifelse(is.na(gene), "", gene)) %>%
+  dplyr::rename(SNP=index_var,
+         P_vqtl = P) %>%
+  arrange(P_vqtl) %>%
+  mutate_at(vars(P_vqtl), ~case_when(
+    is.na(.) ~ ">0.01",
+    . < 1e-300 ~ "<1e-300",
+    TRUE ~ as.character(signif(., digits=3))
+  )) %>%
+  select(Ancestry=ancestry, Biomarker=bm, `Index variant`=SNP, CHR, POS, REF, ALT,
+         P_vQTL=P_vqtl, `Nearest gene`=gene)
+write_csv(anc_spec_vqtl_tbl, "tables/ancestry_specific_vqtls.csv")
+```
+
+```{r vqtl-ma-versus-eur-plot, fig.width=4, fig.asp=0.6}
+vqtl_ma_vs_eur_df <- map(vqtl_list, "EUR") %>%
+  bind_rows(.id="bm") %>%
+  select(bm, SNP, P_EUR=P) %>%
+  inner_join(select(primary_vqtl_df, bm, SNP, P_MA=P_vqtl), by=c("bm", "SNP")) %>%
+  mutate(P_MA = pmax(P_MA, 1e-300))
+with(vqtl_ma_vs_eur_df, table(P_EUR < vqtl_bonferroni, P_MA < vqtl_bonferroni))
+vqtl_ma_vs_eur_plt <- vqtl_ma_vs_eur_df %>%
+  ggplot(aes(x=-log10(P_MA), y=-log10(P_EUR))) +
+  geom_point() +
+  geom_abline(slope=1, intercept=0, linetype="dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x=expression(-log[10](italic(p))*" from meta-analysis"),
+       y=expression(-log[10](italic(p))*" from European analysis")) +
+  theme_bw()
+vqtl_ma_vs_eur_plt
+```
+
+```{r vqtl-versus-me-plot, fig.width=4, fig.asp=0.8}
+vqtl_vs_me_plt <- primary_vqtl_df_withMEs %>%
+  mutate_at(vars(P_vqtl, P_ME), ~pmax(., 1e-300, na.rm=TRUE)) %>%
+  ggplot(aes(x=-log10(P_vqtl), y=-log10(P_ME))) +
+  geom_point() +
+  geom_abline(slope=1, intercept=0, linetype="dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x=expression(-log[10](italic(p))*" for vQTL"),
+       y=expression(-log[10](italic(p))*" for ME"))
+
+vqtl_vs_me_spec_plt <- primary_vqtl_df_withMEs %>%
+  filter(bm %in% c("ggt_log", "hba1c_log")) %>% 
+  mutate(bm = factor(bm, levels=c("ggt_log", "hba1c_log"), 
+                     labels=c("GGT", "HbA1c"))) %>%
+  mutate_at(vars(P_vqtl, P_ME), ~pmax(., 1e-300, na.rm=TRUE)) %>%
+  ggplot(aes(x=-log10(P_vqtl), y=-log10(P_ME))) +
+  geom_point() +
+  geom_abline(slope=1, intercept=0, linetype="dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x=expression(-log[10](italic(p))*" for vQTL"),
+       y=expression(-log[10](italic(p))*" for ME")) +
+  facet_grid(~bm) +
+  theme(strip.background=element_rect(fill="white"))
+
+plot_grid(vqtl_vs_me_plt, vqtl_vs_me_spec_plt,
+          nrow=2, labels=c("a", "b"))
+
+# Digging into vQTLs w/ non-significant MEs
+vqtl_vs_sugg_me_tbl <- vqtl_noME_df %>%
+  filter(P_ME < 0.05) %>%
+  mutate(Biomarker = biomarkers[match(bm, biomarkers_pretty)]) %>%
+  select(bm, SNP=index_var, beta_ME, P_ME) %>%
+  inner_join(select(vqtl_merged, bm, SNP, REF, ALT, Dir, P), by=c("bm", "SNP"))
+```
+
+```{r genomic-correlation-plots, fig.asp=0.7, fig.width=6}
+gen_corr_hmap_df <- bind_rows(list(vqtl=vqtl_gc_df, me=me_gc_df), .id="type") %>%
+  mutate(rg = ifelse(match(bm1, biomarkers_ordered) < match(bm2, biomarkers_ordered), rg, NA),
+         sig = p < 0.05 / (20 * 19 / 2)) %>%
+  filter((bm1 != "cysC_log") & (bm2 != "bilirubin_dir_log")) %>%
+  mutate_at(vars(bm1, bm2),
+            ~factor(., levels=biomarkers[biomarkers_order],
+                    labels=biomarkers_pretty[biomarkers_order]))
+
+vqtl_gen_corr_hmap <- gen_corr_hmap_df %>%
+  filter(type == "vqtl") %>%
+  ggplot(aes(x=bm1, y=fct_rev(bm2))) +
+  geom_tile(aes(fill=rg), size=0, width=0.9, height=0.9, color="black") +
+  scale_x_discrete(position="bottom") +
+  scale_fill_gradient2(name=expression(rho["g,vQTL"]),
+                       guide=guide_colorbar(frame.colour="black", ticks=FALSE,
+                                            title.position="top"),
+                       na.value="white",
+                       limits=c(-1, 1), breaks=c(-1, -0.5, 0, 0.5, 1), ) +
+  geom_text(aes(label=ifelse(sig & !is.na(rg), "*", "")), nudge_y=-0.15) +
+  theme_minimal() + 
+  theme(axis.title=element_blank(), 
+        axis.text.x=element_text(angle=30, hjust=0.9),
+        legend.position=c(0.7, 0.7), legend.direction="horizontal",
+        legend.title=element_text(size=15), legend.title.align=0.5,
+        panel.grid=element_blank(),
+        plot.margin=unit(c(0, 0, 0, 1), "cm"))
+
+me_gen_corr_hmap <- gen_corr_hmap_df %>%
+  filter(type == "me") %>%
+  ggplot(aes(x=bm1, y=fct_rev(bm2))) +
+  geom_tile(aes(fill=rg), size=0, width=0.9, height=0.9, color="black") +
+  scale_x_discrete(position="bottom") +
+  scale_fill_gradient2(name=expression(rho["g,ME"]),
+                       guide=guide_colorbar(frame.colour="black", ticks=FALSE,
+                                            title.position="top"),
+                       na.value="white",
+                       limits=c(-1, 1), breaks=c(-1, -0.5, 0, 0.5, 1), ) +
+  geom_text(aes(label=ifelse(sig & !is.na(rg), "*", "")), nudge_y=-0.15) +
+  theme_minimal() + 
+  theme(axis.title=element_blank(), 
+        axis.text.x=element_text(angle=30, hjust=0.9),
+        legend.position=c(0.7, 0.7), legend.direction="horizontal",
+        legend.title=element_text(size=15), legend.title.align=0.5,
+        panel.grid=element_blank(),
+        plot.margin=unit(c(0, 0, 0, 1), "cm"))
+
+diff_gen_corr_hmap <- bind_rows(list(vqtl=vqtl_gc_df, me=me_gc_df), .id="type") %>%
+  group_by(bm1, bm2) %>%
+  summarise(rg_diff = rg[type == "me"] - rg[type == "vqtl"], 
+            p_vqtl = p[type == "vqtl"], 
+            p_me = p[type == "me"], 
+            .groups="drop") %>%
+  mutate(rg_diff = ifelse(match(bm1, biomarkers_ordered) < match(bm2, biomarkers_ordered), rg_diff, NA),
+         highlight = !is.na(rg_diff) & abs(rg_diff) > 0.2 & p_vqtl < 0.05 & p_me < 0.05) %>%
+  filter((bm1 != "cysC_log") & (bm2 != "bilirubin_dir_log")) %>%
+  mutate_at(vars(bm1, bm2),
+            ~factor(., levels=biomarkers[biomarkers_order],
+                    labels=biomarkers_pretty[biomarkers_order])) %>%
+  ggplot(aes(x=bm1, y=fct_rev(bm2))) +
+  geom_tile(aes(fill=rg_diff, size=highlight), width=0.9, height=0.9, color="black") +
+  scale_fill_gradient2(name=expression(rho["g,ME"]*" - "*rho["g,vQTL"]),
+                       guide=guide_colorbar(frame.colour="black", ticks=FALSE,
+                                            title.position="top"),
+                       na.value="white",
+                       limits=c(-0.5, 0.5), breaks=c(-0.4, 0, 0.4), ) +
+  scale_size_manual(values=c(0, 0.5), guide="none") + 
+  theme_minimal() + 
+  theme(axis.title=element_blank(), 
+        axis.text.x=element_text(angle=30, hjust=0.9),
+        panel.grid=element_blank(),
+        legend.position=c(0.7, 0.7), legend.direction="horizontal",
+        legend.title=element_text(size=15), legend.title.align=0.5,
+        plot.margin=unit(c(0, 0, 0, 1), "cm"))
+
+gen_corr_hmap_top <- plot_grid(vqtl_gen_corr_hmap, me_gen_corr_hmap,
+                               ncol=2, 
+                               labels=c("a", "b"), label_x=0)
+gen_corr_hmap_bottom <- plot_grid(NULL, diff_gen_corr_hmap, NULL,
+                                  ncol=3, rel_widths=c(1, 2, 1),
+                                  labels=c("", "c", ""))
+plot_grid(gen_corr_hmap_top, gen_corr_hmap_bottom, nrow=2)
+```
+
+```{r wghs-vqtl-rep-table}
+vqtl_rep_df %>%
+  mutate_at(vars(contains("P_")), ~signif(., digits=2)) %>%
+  mutate(bm = factor(bm, levels=biomarkers, labels=biomarkers_pretty)) %>%
+  select(SNP, Biomarker=bm, 
+         `P - UKB`=P_vqtl, `P - WGHS`=P_rep) %>%
+  write_csv("tables/wghs_vqtl_rep_table.csv")
+```
+
+```{r phesant-tables}
+exp_group_examples <- c(
+  "Health and medical history"="Chest pain or discomfort; ever diagnosed with IBS; back pain for 3+ months",
+  "Lifestyle and environment" = "Duration of walks; coffee intake; current tobacco smoking",
+  "Medical conditions" = "Self-reported medical conditions during verbal interview",
+  "Medications" = "Self-reported medication use during verbal interview",
+  "Miscellaneous" = "Sex; liver fat %; average heart rate",
+  "Physical measures" = "Body mass index; forced vital capacity; systolic blood pressure",
+  "Psychosocial factors" = "Work/job satisfaction; neuroticism score; leisure/social activities",
+  "Sociodemographics" = "UKB assessment centre; job involves shift work; Townsend deprivation index"
+)
+
+exposure_fields_df <- tibble(
+  exposure = exposures,
+  FieldID = gsub("_.*", "", exposures)  # Remove specific field value for discrete fields
+) %>%
+  mutate_all(~ifelse(. %in% c("age", "sex"), c(age=31, sex=21003)[.], .)) %>%
+  left_join(variable_info, by="FieldID") %>%
+  select(FieldID, Field, exposure, exp_group)
+
+exposure_fields_df %>%
+  select(Field, FieldID, Exposure=exposure, `Exposure group`=exp_group) %>%
+  arrange(as.numeric(FieldID), Exposure) %>%
+  distinct() %>%
+  write_csv("tables/exposure_table.csv")
+
+ exposure_summary_df <- exposure_fields_df %>%
+  group_by(exp_group) %>%
+  summarise(`# fields` = n()) %>%
+  # `Example fields` = paste(sample(Field, 3), collapse="; "))
+  mutate(`Example fields` = exp_group_examples[exp_group]) %>%
+  dplyr::rename(`Exposure group` = exp_group)
+ 
+exposure_summary_df %>%
+  write_csv("tables/exposure_summary_table.csv")
+exposure_summary_df %>%
+  kable(caption="Exposure summary table") %>%
+  kable_styling()
+```
+
+```{r top-ewis-table}
+top_ewis_tbl <- ewis_df %>%
+  filter(P < ewis_bonferroni) %>%
+  left_join(select(expAdj_comparison_df, SNP, bm, P_expAdj), by=c("SNP", "bm")) %>%
+  mutate(sig_expAdj_vqtl = ifelse(P_expAdj < vqtl_bonferroni, "Yes", "No"),
+         bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  mutate_at(vars(Allele1, Allele2), toupper) %>%
+  arrange(P) %>%
+  select(Biomarker=bm, 
+         SNP, Chromosome=CHR, Position=POS,
+         `Non-effect allele`=Allele1, `Effect allele`=Allele2,
+         Exposure=Field, `UKB Field ID`=FieldID, 
+         `Interaction effect`=Beta, `Interaction p-value`=P, 
+         `Effect directions (EUR/AFR/EAS/SAS)`=Dir,
+         `Exposure category`=exp_group,
+         `Significant exposure-adjusted vQTL`=sig_expAdj_vqtl)
+write_csv(top_ewis_tbl, "tables/top_ewis.csv")
+```
+
+```{r wghs-ewis-bmi-rep-table}
+ewis_bmi_rep_df %>%
+  mutate_at(vars(contains("Beta_")), ~round(., digits=3)) %>%
+  mutate_at(vars(contains("P_")), ~signif(., digits=2)) %>%
+  mutate(Exposure = "BMI",
+         bm = factor(bm, levels=biomarkers, labels=biomarkers_pretty)) %>%
+  arrange(P_rep) %>%
+  select(SNP, Biomarker=bm, Exposure,
+         `Beta - UKB`=Beta_int, `P - UKB`=P_int,
+         `Beta - WGHS`=Beta_rep, `P - WGHS`=P_rep) %>%
+  write_csv("tables/wghs_ewis_bmi_rep_table.csv")
+```
+
+```{r replication-plots}
+rep_bms <- unique(vqtl_rep_df$bm)
+rep_plt_bm_colors <- setNames(brewer.pal(length(rep_bms), "Paired"),
+                              biomarkers_pretty[match(rep_bms, biomarkers)])
+
+vqtl_rep_plt <- vqtl_rep_df %>%
+  mutate(P_vqtl = pmax(P_vqtl, 1e-300)) %>%
+  select(SNP, bm, P_vqtl, P_rep) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  ggplot(aes(x=-log10(P_vqtl), y=-log10(P_rep))) +
+  geom_point(aes(color=bm)) +
+  scale_color_manual(values=rep_plt_bm_colors, name="Biomarker") +
+  labs(x=expression(-log[10](italic(p)[vQTL])-primary),
+       y=expression(-log[10](italic(p)[vQTL])-replication)) +
+  theme_bw()
+
+ewis_bmi_rep_plt <- ewis_bmi_rep_df %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  ggplot(aes(x=-log10(P_int), y=-log10(P_rep), color=bm)) +
+  geom_point() +
+  scale_color_manual(values=rep_plt_bm_colors, name="Biomarker") +
+  labs(x=expression(-log[10](italic(p)[int])-primary),
+       y=expression(-log[10](italic(p)[int])-replication)) +
+  theme_bw()
+
+rep_plt_legend <- get_legend(vqtl_rep_plt)
+
+plot_grid(vqtl_rep_plt + theme(legend.position="none"), 
+          ewis_bmi_rep_plt + theme(legend.position="none"), 
+          rep_plt_legend,
+          nrow=1, rel_widths=c(1, 1, 0.3), labels=c("a", "b", ""))
+```
+
+```{r vqtl-sensitivity-plots, fig.width=4, fig.asp=0.5}
+vqtl_sens_INT_dot_plt <- vqtl_sens_plt_df %>%
+  mutate(logged=grepl("log", bm)) %>%
+  mutate_at(vars(contains("nlp_")), ~pmin(., 300)) %>%
+  ggplot(aes(x=nlp_raw, y=nlp_INT)) +
+  geom_point() +
+  geom_hline(yintercept = -log10(vqtl_bonferroni), linetype="dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype="dashed") +
+  geom_abline(slope=1, intercept=0, linetype="dotted") +
+  scale_x_log10(limits=c(5, 300)) +
+  scale_y_log10(limits=c(0.05, 300)) +
+  labs(x=expression(-log[10](italic(p)[vQTL])*" - Primary analysis"),
+       y=expression(-log[10](italic(p)[vQTL])*" - INT phenotype")) +
+  annotate("text", label="vQTL Bonferroni threshold", x=150, y=11) +
+  annotate("text", label="Nominal threshold (p < 0.05)", x=150, y=1.8) +
+  theme_bw()
+
+gw_bmi_ewis_helper_df <- ewis_df %>%
+  filter(FieldID == 21001,
+         P < ewis_bonferroni) %>%
+  distinct(bm, SNP, .keep_all=T) %>%
+  select(bm, SNP, P)
+vqtl_sens_bmiAdj_dot_plt_df <- vqtl_sens_plt_df %>%
+  mutate_at(vars(contains("nlp_")), ~pmin(., 300)) %>%
+  left_join(gw_bmi_ewis_helper_df, by=c("bm", "SNP")) %>%
+  mutate(gw_bmi = ifelse(is.na(P), FALSE, TRUE)) %>%
+  arrange(gw_bmi)
+vqtl_sens_bmiAdj_dot_plt <- vqtl_sens_bmiAdj_dot_plt_df %>%
+  ggplot(aes(x=nlp_raw, y=nlp_bmiAdj, color=gw_bmi)) +
+  geom_point() +
+  geom_hline(yintercept = -log10(vqtl_bonferroni), linetype="dashed") +
+  geom_abline(slope=1, intercept=0, linetype="dotted") +
+  scale_x_log10(limits=c(5, 300)) +
+  scale_y_log10(limits=c(5, 300)) +
+  scale_color_brewer(palette="Dark2",
+                     labels=c("No significant BMI interactions",
+                              "Significant BMI interactions")) +
+  labs(x=expression(-log[10](italic(p))*" - Primary analysis"),
+       y=expression(-log[10](italic(p))*" - BMI-adjusted phenotype")) +
+  annotate("text", label="vQTL Bonferroni threshold", x=150, y=10) +
+  theme_bw() +
+  theme(legend.title=element_blank(), legend.position=c(0.2, 0.8),
+        legend.background=element_rect(color="black"))
+
+vqtl_sens_INT_dot_plt
+```
+
+```{r ewis-bias-figure, fig.width=4, fig.asp=0.6}
+expAdj_comparison_plt <- expAdj_comparison_df %>%
+  mutate_at(vars(contains("P_")), ~ifelse(. == 0, 300, -log10(.))) %>%
+  mutate(bm = biomarkers_pretty[match(bm, biomarkers)]) %>%
+  ggplot(aes(x=P_vqtl, y=P_expAdj, color=bm)) +
+  geom_point() +
+  geom_abline(slope=1, intercept=0, linetype="dotted") +
+  geom_hline(yintercept=-log10(vqtl_bonferroni), linetype="dashed") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x=expression(-log[10](italic(p)[vQTL])*" - primary"),
+       y=expression(-log[10](italic(p)[vQTL])*" - exposure-adjusted")) +
+  annotate("text", x=17, y=0.9, size=2.5,
+           label="rs13409371 - hsCRP") +
+  annotate("text", x=170, y=3, size=2.5,
+           label="rs62192926 - Bilirubin-Dir") +
+  theme(legend.title=element_blank(), legend.position="bottom")
+
+ewis_qq_img <- grid::rasterGrob(
+  png::readPNG("../../data/processed/ewis/stage2_ewis_ma_results_qq.png"),
+  interpolate=T
+)
+
+ecp_legend <- get_legend(
+  expAdj_comparison_plt + guides(color=guide_legend(nrow=3))
+)
+ewis_bias_top <- plot_grid(
+  expAdj_comparison_plt + theme(legend.position="none"),
+  ewis_qq_img,
+  labels=c("a", "b"), ncol=2, rel_widths=c(3, 3)
+)
+plot_grid(ewis_bias_top, ecp_legend, nrow=2, rel_heights=c(4, 1))
+```
+
+```{r anthro-PC-plot}
+anthro_PC1_img <- grid::rasterGrob(
+  png::readPNG("../../data/processed/anthro_PCs/PC1_loadings.png"),
+  interpolate=T
+)
+anthro_PC2_img <- grid::rasterGrob(
+  png::readPNG("../../data/processed/anthro_PCs/PC2_loadings.png"),
+  interpolate=T
+)
+
+plot_grid(anthro_PC1_img, anthro_PC2_img, ncol=2)
+```
+
+```{r tg-vignette-fig-1, fig.asp=1.2, fig.width=3}
+tg_hmap_ewis_df %>%
+  mutate(SNP = factor(SNP, levels=tg_snp_clust_order,
+                      labels=tg_snp_names[match(tg_snp_clust_order, tg_snps)]),
+         Field = factor(Field, levels=tg_exp_clust_order)) %>%
+  mutate(sig_label = ifelse(P < ewis_bonferroni, "*", "")) %>%
+  ggplot(aes(x=SNP, y=Field, fill=z)) +
+  geom_tile() +
+  scale_fill_gradient2(name="GEI\nz-score") +
+  labs(x="", y="") +
+  facet_grid(rows=vars(source), scales="free_y", space="free_y") +
+  theme(axis.text.x=element_text(angle=30, hjust=0.9),
+        strip.background=element_blank(), strip.text=element_blank())
+```
+
+```{r tg-vignette-fig-2, fig.asp=0.3, fig.width=4.5}
+ukb_nmr_res_df %>%
+  filter(snp == "rs139566989",
+         exposure %in% names(anthro_exp_map)) %>%
+  mutate(gxe_z = gxe_beta / gxe_se,
+         SNP = "rs139566989 (LIPC)",
+         exposure = factor(exposure, levels=names(anthro_exp_map),
+                           labels=anthro_exp_map),
+         outcome = factor(outcome, levels=nmr_ordered, labels=nmr_pretty)) %>%
+  ggplot(aes(x=outcome, y=fct_rev(exposure), fill=gxe_z)) +
+  geom_tile() +
+  scale_x_discrete(position="top") +
+  scale_fill_gradient2(name="GEI\nz-score") +
+  labs(x="", y="", 
+       caption=expression("rs139566989 ("*italic("LIPC")*")")) +
+  theme(axis.text.x=element_text(angle=30, hjust=0.1),
+        strip.background=element_blank(), strip.text=element_blank(),
+        plot.margin=margin(0, 0, 0, 0, unit="pt"),
+        plot.caption=element_text(size=11, hjust=0.5))
+```
+
+```{r tg-vignette-fig-3, fig.asp=0.5, fig.width=4.5}
+plot_grid(
+  make_tg_strat_plot(data.df, "rs139566989", "bmi", "Total Triglycerides", "Total TG") +
+    coord_cartesian(ylim=c(-0.5, 0.6)) +
+    labs(title="BMI"),
+  make_tg_strat_plot(data.df, "rs139566989", "bmi", "Triglycerides in Very Large HDL", "TG in Very Large HDL") +
+    coord_cartesian(ylim=c(-0.5, 0.6)) +
+    labs(title="BMI"),
+  make_tg_strat_plot(data.df, "rs139566989", "anthro_PC2", "Triglycerides in Very Large HDL", "TG in Very Large HDL") +
+    coord_cartesian(ylim=c(-0.5, 0.6)) +
+    labs(title="Anthropometric PC2") +
+    theme(legend.title=element_blank()),
+  ncol=3
+)
+```
+
+```{r alc-vignette-fig, fig.width=5, fig.asp=0.5}
+adh1b_vqtl_df <- lapply(vqtl_list, function(vl) filter(vl$MA, SNP == "rs1229984")) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, P)
+adh1b_me_df <- lapply(me_list, function(ml) filter(ml$MA, SNP == "rs1229984")) %>%
+  bind_rows(.id="bm") %>%
+  select(bm, P)
+vqtl_me_colors <- setNames(brewer.pal(10, "Paired")[c(6, 2)], c("vqtl", "me"))
+adh1b_vqtl_plt <- bind_rows(list(vqtl=adh1b_vqtl_df, me=adh1b_me_df), .id="type") %>%
+  complete(bm, type, fill=list(P=0.05)) %>%
+  mutate(nlp = pmin(-log10(P), 300),
+         bm = factor(bm, levels=biomarkers, labels=biomarkers_pretty),
+         type = factor(type, levels=c("vqtl", "me"))) %>%
+  ggplot(aes(x=fct_rev(bm), y=nlp, color=type)) +
+  geom_point() +
+  geom_hline(yintercept=-log10(vqtl_bonferroni), color="gray", linetype="dashed") +
+  scale_color_manual(values=vqtl_me_colors, 
+                     name="", labels=c("vQTL", "Main effect")) +
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  coord_flip() +
+  theme(legend.position=c(0.7, 0.3), legend.title=element_blank(),
+        legend.background=element_rect(color="gray"),
+        panel.grid.minor.x=element_blank())
+
+ewis_mh_alt_adh1b_df <- ewis_df %>%
+  filter(bm == "alt_log", SNP == "rs1229984") %>%
+  mutate(grp = exp_group) %>%
+  arrange(grp, desc(P)) %>%
+  mutate(idx = 1:nrow(.) / nrow(.))
+ewis_mh_alt_adh1b_lims <- ewis_mh_alt_adh1b_df %>%
+  group_by(grp) %>%
+  summarise(x = mean(idx))
+ewis_mh_alt_adh1b_colors <- colorRampPalette(brewer.pal(8, "Dark2"))(nrow(ewis_mh_alt_adh1b_lims))
+adh1b_alt_ewis_plt <- ewis_mh_alt_adh1b_df %>%
+  ggplot(aes(x=idx, y=-log10(P), color=factor(grp))) +
+  geom_point(size=0.75) +
+  geom_hline(yintercept=-log10(ewis_bonferroni), color="gray", linetype="dashed") +
+  geom_text(data=filter(ewis_mh_alt_adh1b_df, P < 1e-4), 
+            aes(label=Field), nudge_x=-0.05, nudge_y=0.15, 
+            color="black", size=2, angle=10) +
+  scale_x_continuous(breaks=ewis_mh_alt_adh1b_lims$x,
+                     labels=ewis_mh_alt_adh1b_lims$grp) + 
+  scale_y_continuous(expand=c(0, 1)) +
+  scale_color_manual(values=ewis_mh_alt_adh1b_colors, guide=F) + 
+  labs(x="", y=expression(-log[10](italic(p)))) +
+  theme(axis.text.x=element_text(angle=15, hjust=0.95),
+        panel.grid.major.x=element_blank(), panel.grid.minor.x=element_blank())
+
+adh1b_alc_strat_boxplt <- adh1b_df %>%
+  mutate(alt = exp(alt_log)) %>%
+  ggplot(aes(x=genotype, y=alt, fill=alc)) +
+  geom_boxplot(position=position_dodge()) +
+  coord_cartesian(ylim=c(5, 50)) +
+  scale_fill_discrete(name="Alcohol intake") +
+  labs(x=expression("Genotype at rs1229984"),
+       y="ALT (U/L)")
+
+adh1b_alc_strat_mean_df <- adh1b_df %>%
+  mutate(alt = exp(alt_log)) %>%
+  group_by(genotype, alc) %>%
+  summarise(m = mean(alt),
+            se = sd(alt) / sqrt(n()))
+adh1b_alc_strat_mean_plt <- adh1b_alc_strat_mean_df %>%
+  ggplot(aes(x=genotype, y=m, group=alc, color=alc)) +
+  geom_point(position=position_dodge(width=0.2)) +
+  geom_errorbar(aes(ymin=m - se, ymax=m + se), width=0.2,
+                position=position_dodge(width=0.2)) +
+  scale_color_jco(name="Alcohol\nintake") +
+  labs(x=expression("Genotype at rs1229984"),
+       y="ALT (U/L)") +
+  coord_cartesian(ylim=c(20.5, 24.5)) +
+  guides(color=guide_legend(title.position="left", ncol=1)) +
+  theme(legend.background=element_rect(size=0.1, color="gray"),
+        legend.box.margin=unit(c(0.1, 0.1, 0.1, 0.1), "cm"),
+        legend.position=c(0.255, 0.195))
+
+adh1b_alc_primary_fig_right <- plot_grid(
+  adh1b_alt_ewis_plt, 
+  adh1b_alc_strat_mean_plt,
+  nrow=2, rel_heights=c(3, 4), labels=c("b", "c"), align="v", axis="lr"
+)
+plot_grid(adh1b_vqtl_plt, adh1b_alc_primary_fig_right, 
+          ncol=2, rel_widths=c(3, 5), labels=c("a", ""))
+```
+
+```{r nmr-metabolite-table}
+ukb_nmr_res_df %>%
+  filter(exposure %in% c("bmi", "anthro_PC1", "anthro_PC2")) %>%  # Technically unnecessary
+  mutate(gxe_p = signif(gxe_p, digits=3)) %>%
+  arrange(gxe_p) %>%
+  select(Metabolite=outcome, SNP=snp, Exposure=exposure,
+         `Effect allele`=effect_allele, 
+         `Interaction effect`=gxe_beta, `Interaction p-value`=gxe_p) %>%
+  write_csv("tables/anthro_nmr_table.csv")
+```
