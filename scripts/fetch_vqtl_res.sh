@@ -38,6 +38,9 @@ rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/metal/*tbl_* ${sensitivi
 rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/metal/*tbl ${sensitivitydir}/metal/
 rsync -avP uger:kw/ukbb-vqtl/data/processed/sensitivity/primary_vqtl_df_withME.csv ${sensitivitydir}/
 
+ancestryspecdir=../data/processed/ancestry_specific
+rsync -avP uger:kw/ukbb-vqtl/data/processed/ancestry_specific/*raw ${ancestryspecdir}/
+
 vignettesdir=../data/processed/vignettes
 rsync -ravP uger:kw/ukbb-vqtl/data/processed/vignettes ../data/processed/
 

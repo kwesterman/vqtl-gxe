@@ -596,6 +596,17 @@ anc_specific_tbl <- map_dfr(anc_overlaps, function(vmo) {
 }, .id="bm")
 
 write(anc_specific_tbl$index_var, "../../data/processed/ancestry_specific/ancestry_specific_variants.txt")
+
+MA_nonEUR_tbl <- map_dfr(anc_overlaps, function(vmo) {
+  vmo %>% 
+    filter(P < vqtl_bonferroni) %>%  # Only examine multiple testing-corrected significant variants
+    group_by(group_index_var) %>% 
+    filter("MA" %in% ancestry,
+           !("EUR" %in% ancestry)) %>%
+    ungroup()
+}, .id="bm")
+
+write(MA_nonEUR_tbl$index_var, "../../data/processed/ancestry_specific/MA_nonEUR_variants.txt")
 ```
 
 * `r sum(anc_overlap_tbl[[2]])` vQTLs reached Bonferroni significance in at least one ancestry but *not* in the meta-analysis. Of these:
@@ -649,6 +660,41 @@ sas_rs143505534_df <- inner_join(anc_spec_phenos$SAS, anc_spec_genotypes, by="id
   mutate(gt = factor(round(rs143505534)))
 with(sas_rs143505534_df, car::leveneTest(glu_log_adj, gt))
 with(filter(sas_rs143505534_df, gt != 0), car::leveneTest(glu_log_adj, gt))
+```
+
+```{r MA-nonEUR-vqtl-viz}
+MA_nonEUR_genotypes <- read_tsv("../../data/processed/ancestry_specific/MA_nonEUR_genotypes.raw") %>%
+  select(id=IID, 7:ncol(.)) %>%
+  rename_at(vars(-id), ~sub("_[ACGT]*$", "", .))
+
+anc_spec_phenos <- list(
+  AFR = read_csv("../../data/processed/vqtl_phenos_AFR.csv"),
+  EAS = read_csv("../../data/processed/vqtl_phenos_EAS.csv"),
+  SAS = read_csv("../../data/processed/vqtl_phenos_SAS.csv")
+)
+
+make_gt_strat_plot <- function(snp, bm, pop) {
+  phenos <- anc_spec_phenos[[pop]]
+  plot_df <- inner_join(phenos, MA_nonEUR_genotypes, by="id") %>%
+    mutate(gt = factor(round(!!sym(snp))))
+  af <- sum(plot_df[[snp]]) / (2 * nrow(plot_df))
+  maf <- round(pmin(af, 1 - af), 3)
+  N_df <- plot_df %>%
+    group_by(gt) %>%
+    summarise(N = n())
+  plot_df %>%
+    mutate(gt = factor(gt, labels=paste0(levels(gt), "\n(N=", 
+                                        N_df$N[match(levels(gt), N_df$gt)], ")"))) %>%
+    ggplot(aes(x=gt, y=!!sym(bm))) +
+    geom_boxplot() +
+    labs(title=pop, x=paste0(snp, " (MAF = ", maf, ")"))
+}
+
+sas_rs188800086_strat_plt <- make_gt_strat_plot("rs188800086", "chol_statinadj_log_adj", "SAS")
+sas_rs188800086_df <- inner_join(anc_spec_phenos$SAS, MA_nonEUR_genotypes, by="id") %>%
+  mutate(gt = factor(round(rs188800086)))
+with(sas_rs188800086_df, car::leveneTest(chol_statinadj_log_adj, gt))
+with(filter(sas_rs188800086_df, gt != 0), car::leveneTest(chol_statinadj_log_adj, gt))
 ```
 
 ## vQTL sensitivity analyses
@@ -1479,11 +1525,13 @@ make_tg_strat_plot <- function(df, snp, exposure, outcome, outcome_label, nbin=3
            exposure_bin = cut(myexp, quantile(myexp, seq(0, 1, length.out=nbin + 1)), 
                               right=FALSE, include.lowest=TRUE)) %>%
     group_by(mysnp, exposure_bin) %>%
-    summarise(mn = mean(myout),
+    summarise(n=n(),
+              mn = mean(myout),
               conf1 = t.test(myout)$conf.int[1],
               conf2 = t.test(myout)$conf.int[2]) %>%
     distinct() %>%
     ungroup()
+  print(plt_df)
   
   bin_labels <- if (exposure == "bmi") c("<25.0", "25.0-28.6", ">28.6") else paste0("T", 1:3)
   
@@ -1608,6 +1656,7 @@ adh1b_alc_strat_mean_df <- adh1b_df %>%
   mutate(alt = exp(alt_log)) %>%
   group_by(genotype, alc) %>%
   summarise(m = mean(alt),
+            n = n(),
             se = sd(alt) / sqrt(n()))
 adh1b_alc_strat_mean_plt <- adh1b_alc_strat_mean_df %>%
   ggplot(aes(x=genotype, y=m, group=alc, color=alc)) +
@@ -1662,7 +1711,7 @@ adh1b_qualitative_gxe_tbl <- adh1b_df %>%
   nest(-alc) %>%
   mutate(strat_lm = map(data, function(d) {
     lm(alt_log ~ snp + sex + age + age_squared + 
-         PC1 + PC2 + PC3 + PC4 + PCs5, data=d) %>%
+         PC1 + PC2 + PC3 + PC4 + PC5, data=d) %>%
       broom::tidy() %>%
       filter(term == "snp")
   })) %>%

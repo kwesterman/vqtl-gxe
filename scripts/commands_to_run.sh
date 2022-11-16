@@ -54,6 +54,7 @@ cat ../data/processed/metabolic_biomarkers.txt | while read bm; do qsub vqtl_sen
 cat ../data/processed/metabolic_biomarkers.txt | while read bm; do qsub vqtl_zhang_check.sh $bm 21001; done
 ./3j_run_annovar.sh  # Locally
 ./3k_fetch_nonsig_MEs.sh  # Interactively on HPC
+./7b_explore_anc_signals.sh  # Interactively on HPC
 # Run FORGE2 tool for epigenomic enrichment on vQTL and ME variants: e.g. pbcopy < ../data/processed/ewis/vqtl_rsids.txt --> mv ~/Downloads/Unnamed.GWAS.erc2-DHS.chart.tsv.gz ../data/processed/forge2/vqtl_variants_DHS.chart.tsv.gz
 
 # All-exposure adjustment sensitivity analyses genome-wide
