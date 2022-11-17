@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-cd ~/kw/ukbb-vqtl/scripts
+cd ~/florez_ukb_projects/ukbb-vqtl/scripts
 
 ukb_dir=/broad/ukbb/imputed_v3
 

@@ -12,7 +12,7 @@ use .r-3.6.0
 
 biomarker=$1
 
-cd ~/kw/ukbb-vqtl/scripts
+cd ~/florez_ukb_projects/ukbb-vqtl/scripts
 
 
 # vQTL meta-analysis

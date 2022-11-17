@@ -17,10 +17,10 @@ cat ../data/processed/metabolic_biomarkers.txt | while read bm; do for anc in EU
 cat ../data/processed/metabolic_biomarkers.txt | while read bm; do qsub vqtl_meta_analysis.sh $bm; done
 
 # Copy new ewis variant file to cluster 
-rsync -avP ../data/processed/ewis/ewis_variants.txt uger:kw/ukbb-vqtl/data/processed/ewis/
-rsync -avP ../data/processed/ewis/ewis_variant_data.csv uger:kw/ukbb-vqtl/data/processed/ewis/
-rsync -avP ../data/processed/ewis/ME_variants.txt uger:kw/ukbb-vqtl/data/processed/ewis/
-rsync -avP ../data/processed/ewis/ME_variant_data.csv uger:kw/ukbb-vqtl/data/processed/ewis/
+rsync -avP ../data/processed/ewis/ewis_variants.txt uger:florez_ukb_projects/ukbb-vqtl/data/processed/ewis/
+rsync -avP ../data/processed/ewis/ewis_variant_data.csv uger:florez_ukb_projects/ukbb-vqtl/data/processed/ewis/
+rsync -avP ../data/processed/ewis/ME_variants.txt uger:florez_ukb_projects/ukbb-vqtl/data/processed/ewis/
+rsync -avP ../data/processed/ewis/ME_variant_data.csv uger:florez_ukb_projects/ukbb-vqtl/data/processed/ewis/
 
 # Subset to vQTL SNPs
 qsub subset_vqtls.sh
@@ -58,7 +58,7 @@ cat ../data/processed/metabolic_biomarkers.txt | while read bm; do qsub vqtl_zha
 # Run FORGE2 tool for epigenomic enrichment on vQTL and ME variants: e.g. pbcopy < ../data/processed/ewis/vqtl_rsids.txt --> mv ~/Downloads/Unnamed.GWAS.erc2-DHS.chart.tsv.gz ../data/processed/forge2/vqtl_variants_DHS.chart.tsv.gz
 
 # All-exposure adjustment sensitivity analyses genome-wide
-rsync -avP ../data/processed/ewis/significant_exposures.txt uger:kw/ukbb-vqtl/data/processed/ewis/
+rsync -avP ../data/processed/ewis/significant_exposures.txt uger:florez_ukb_projects/ukbb-vqtl/data/processed/ewis/
 cat ../data/processed/metabolic_biomarkers.txt | while read bm; do for anc in EUR AFR EAS SAS; do ./8_prep_expAdj_phenos.sh $bm $anc; done; done
 # Genome-wide version....
 cat ../data/processed/metabolic_biomarkers.txt | while read bm; do for chr in {1..22}; do qsub run_vqtl_expAdj.sh $bm EUR $chr; done; done  # Then repeat with lower resources for other ancestries
@@ -70,7 +70,7 @@ cat ../data/processed/metabolic_biomarkers.txt | while read bm; do for anc in EU
 cat ../data/processed/metabolic_biomarkers.txt | while read bm; do ./8c_expAdj_meta_analysis_sigOnly.sh $bm; done
 
 # Prepare and run conditional GEI tests
-rsync -avP ../data/processed/ewis/signif* uger:kw/ukbb-vqtl/data/processed/ewis/
+rsync -avP ../data/processed/ewis/signif* uger:florez_ukb_projects/ukbb-vqtl/data/processed/ewis/
 qsub prep_conditional_gxe.sh
 qsub conditional_gxe.sh
 

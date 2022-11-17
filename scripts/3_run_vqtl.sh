@@ -17,10 +17,10 @@ ancestry=$2
 chr=$3
 threads=$4
 
-genodir=/broad/hptmp/kwesterm/ukb_bfiles
+genodir=/broad/hptmp/florez_ukb_projectsesterm/ukb_bfiles
 
 
-cd ~/kw/ukbb-vqtl/scripts
+cd ~/florez_ukb_projects/ukbb-vqtl/scripts
 
 
 # Create phenotype file with OSCA-specific format
